@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { AlertTriangle, Search, RefreshCw, Play } from 'lucide-react';
+import { AlertTriangle, Search, Play } from 'lucide-react';
 import { MinerConnectionInfo } from '@/components/setup/MinerConnectionInfo';
 import { Shell } from '@/components/layout/Shell';
 import { StatCard } from '@/components/data/StatCard';
@@ -50,7 +50,6 @@ export function UnifiedDashboard() {
   const {
     data: sv1Data,
     isLoading: sv1Loading,
-    refetch: refetchSv1,
   } = useSv1ClientsData(0, 1000); // Fetch all for client-side filtering
 
   // Health checks for status indicators
@@ -327,15 +326,6 @@ export function UnifiedDashboard() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-              <button
-                onClick={() => refetchSv1()}
-                className="h-9 px-3 rounded-lg border border-border/50 bg-muted/30 hover:bg-background transition-colors flex items-center gap-2 text-sm"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Refresh
-              </button>
-            </div>
           </div>
         </div>
       )}

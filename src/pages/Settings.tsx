@@ -5,7 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { useUiConfig } from '@/hooks/useUiConfig';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle2,
   RotateCcw,
@@ -17,7 +16,6 @@ import { ConfigurationTab } from '@/components/settings/ConfigurationTab';
  * Settings page with Configuration and Appearance tabs.
  */
 export function Settings() {
-  const queryClient = useQueryClient();
   const { config, updateConfig, resetConfig } = useUiConfig();
   const logoInputRef = useRef<HTMLInputElement>(null);
 
@@ -47,10 +45,6 @@ export function Settings() {
 
   const primaryHex = hslToHex(config.primaryColor);
 
-  const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['setup-status'] });
-  };
-
   return (
     <Shell>
       <div className="max-w-5xl mx-auto space-y-8">
@@ -61,9 +55,6 @@ export function Settings() {
               Manage your configuration and appearance.
             </p>
           </div>
-          <Button variant="outline" onClick={handleRefresh}>
-            Refresh
-          </Button>
         </div>
 
         <Tabs defaultValue="configuration" className="space-y-6">
