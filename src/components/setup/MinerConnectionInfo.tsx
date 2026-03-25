@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
-import { TRANSLATOR_PORT, JDC_PORT } from '@/lib/ports';
+import { TRANSLATOR_PORT, JDC_PORT, JDC_AUTHORITY_PUBLIC_KEY } from '@/lib/ports';
 
 function CopyableAddress({ address }: { address: string }) {
   const [copied, setCopied] = useState(false);
@@ -32,7 +32,7 @@ interface MinerConnectionInfoProps {
 
 export function MinerConnectionInfo({ isJdMode, centered = false }: MinerConnectionInfoProps) {
   const translatorUrl = `stratum+tcp://<your-machine-ip>:${TRANSLATOR_PORT}`;
-  const jdcUrl = `stratum+tcp://<your-machine-ip>:${JDC_PORT}`;
+  const jdcUrl = `stratum2+tcp://<your-machine-ip>:${JDC_PORT}/${JDC_AUTHORITY_PUBLIC_KEY}`;
 
   const hint = (
     <p className="text-xs text-muted-foreground">

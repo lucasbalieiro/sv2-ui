@@ -13,6 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 interface PortsConfig {
   TRANSLATOR_PORT: number;
   JDC_PORT: number;
+  JDC_AUTHORITY_PUBLIC_KEY: string;
 }
 
 function loadPorts(): PortsConfig {
@@ -35,6 +36,7 @@ function loadPorts(): PortsConfig {
 const ports = loadPorts();
 export const TRANSLATOR_PORT = ports.TRANSLATOR_PORT;
 export const JDC_PORT = ports.JDC_PORT;
+export const JDC_AUTHORITY_PUBLIC_KEY = ports.JDC_AUTHORITY_PUBLIC_KEY;
 
 /**
  * Generate Translator Proxy config (tproxy-config.toml)
@@ -54,7 +56,7 @@ export function generateTranslatorConfig(data: SetupData): string {
   // When connecting to local JDC, we don't need authority key (using hardcoded keys)
   // When connecting to external pool, we need the pool's authority key
   const authorityPubkey = mode === 'jd' 
-    ? '9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72'
+    ? JDC_AUTHORITY_PUBLIC_KEY
     : pool.authority_public_key;
 
   // Min hashrate from user config (default 100 TH/s if not set)
@@ -131,7 +133,7 @@ max_supported_version = 2
 min_supported_version = 2
 
 # Auth keys for downstream connections
-authority_public_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+authority_public_key = "${JDC_AUTHORITY_PUBLIC_KEY}"
 authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
 cert_validity_sec = 3600
 
