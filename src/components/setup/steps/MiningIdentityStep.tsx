@@ -5,6 +5,14 @@ import { isValidBitcoinAddress, getBitcoinAddressError } from '@/lib/utils';
 
 const SRI_POOL_AUTHORITY_KEY = '9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72';
 
+const DONATION_SNAP_POINTS = [0, 10, 25, 50, 75, 100];
+const DONATION_SNAP_THRESHOLD = 3;
+
+function snapDonation(value: number): number {
+  const nearest = DONATION_SNAP_POINTS.find(p => Math.abs(value - p) <= DONATION_SNAP_THRESHOLD);
+  return nearest ?? value;
+}
+
 interface SriIdentityParts {
   address: string;
   workerName: string;
@@ -164,13 +172,22 @@ export function MiningIdentityStep({ data, updateData, onNext }: StepProps) {
                 min={0}
                 max={100}
                 value={donationPercent}
-                onChange={(e) => setDonationPercent(Number(e.target.value))}
+                onChange={(e) => setDonationPercent(snapDonation(Number(e.target.value)))}
                 aria-label={`Donation: ${donationPercent}%`}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={donationPercent}
                 className="w-full accent-primary"
+                list="donation-snap-points"
               />
+              <datalist id="donation-snap-points">
+                <option value="0" />
+                <option value="10" />
+                <option value="25" />
+                <option value="50" />
+                <option value="75" />
+                <option value="100" />
+              </datalist>
               <div className="flex justify-between text-xs text-muted-foreground select-none">
                 <span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
               </div>
