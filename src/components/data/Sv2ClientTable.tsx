@@ -6,6 +6,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { InfoPopover } from '@/components/ui/info-popover';
 import { formatHashrate } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import type { ClientMetadata } from '@/types/api';
@@ -47,7 +48,19 @@ export function Sv2ClientTable({ clients, isLoading, onClientClick }: Sv2ClientT
           <TableRow className="hover:bg-transparent border-border/40">
             <TableHead className="w-[80px]">Client ID</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead className="text-right">Hashrate</TableHead>
+            <TableHead className="text-right">
+              <span className="flex items-center justify-end gap-1.5">
+                Estimated Hashrate
+                <InfoPopover>
+                  Your proxy cannot directly measure how fast your miner is hashing. It estimates
+                  hashrate indirectly: it knows the difficulty of the work it assigned you, and it
+                  counts the valid shares you submit. From those two values it calculates how much
+                  hashing you must be doing. This is your estimated hashrate. Sampled every 5
+                  seconds. May take up to 60 seconds to reflect your miner's actual output after
+                  connecting.
+                </InfoPopover>
+              </span>
+            </TableHead>
             <TableHead className="text-right hidden md:table-cell">Extended Channels</TableHead>
             <TableHead className="text-right hidden lg:table-cell">Standard Channels</TableHead>
             <TableHead className="text-right">Total Channels</TableHead>
@@ -82,7 +95,7 @@ export function Sv2ClientTable({ clients, isLoading, onClientClick }: Sv2ClientT
                   </div>
                 </TableCell>
                 <TableCell className="text-right font-mono font-medium">
-                  {formatHashrate(client.total_hashrate)}
+                  ~{formatHashrate(client.total_hashrate)}
                 </TableCell>
                 <TableCell className="text-right font-mono hidden md:table-cell text-muted-foreground">
                   {client.extended_channels_count}

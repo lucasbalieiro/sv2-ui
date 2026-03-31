@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { AlertTriangle, Search, Play } from 'lucide-react';
+import { InfoPopover } from '@/components/ui/info-popover';
 import { MinerConnectionInfo } from '@/components/setup/MinerConnectionInfo';
 import { Shell } from '@/components/layout/Shell';
 import { StatCard } from '@/components/data/StatCard';
@@ -228,9 +229,14 @@ export function UnifiedDashboard() {
       {/* Hero Stats Section */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          title="Total Hashrate"
+          title="Total Estimated Hashrate"
           value={formatHashrate(totalHashrate)}
           subtitle={`${totalClientChannels} client channel(s)`}
+          info={
+            <InfoPopover>
+              Estimated hashrate sampled every 5 seconds. May take a few minutes to reflect your miner's actual output.
+            </InfoPopover>
+          }
         />
 
         <StatCard
@@ -302,10 +308,15 @@ export function UnifiedDashboard() {
       </div>
 
       {/* Main Chart - Real data accumulated over time */}
-      <HashrateChart 
+      <HashrateChart
         data={hashrateHistory}
         title="Hashrate History"
         description="Real-time data collected since page load"
+        info={
+          <InfoPopover>
+            Estimated hashrate sampled every 5 seconds. May take a few minutes to reflect your miner's actual output.
+          </InfoPopover>
+        }
       />
 
       {/* Loading State */}

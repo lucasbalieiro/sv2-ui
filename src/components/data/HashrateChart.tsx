@@ -1,4 +1,5 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { type ReactNode } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Area,
   AreaChart,
@@ -14,6 +15,7 @@ interface HashrateChartProps {
   data: { time: string; hashrate: number }[];
   title?: string;
   description?: string;
+  info?: ReactNode;
 }
 
 /**
@@ -81,18 +83,18 @@ export function HashrateChart({
   data,
   title = 'Hashrate History',
   description,
+  info,
 }: HashrateChartProps) {
   // Don't render chart if no data
   if (!data || data.length === 0) {
     return (
       <Card className="glass-card border-none shadow-sm bg-card/40">
         <CardHeader>
-          <CardTitle className="text-base font-normal text-muted-foreground">
+          <CardTitle className="text-base font-normal text-muted-foreground flex items-center gap-1.5">
             {title}
+            {info}
           </CardTitle>
-          {description && (
-            <CardDescription>{description}</CardDescription>
-          )}
+          {description && <CardDescription>{description}</CardDescription>}
         </CardHeader>
         <CardContent>
           <div className="h-[200px] w-full flex items-center justify-center text-muted-foreground text-sm">
@@ -108,12 +110,11 @@ export function HashrateChart({
   return (
     <Card className="glass-card border-none shadow-sm bg-card/40">
       <CardHeader>
-        <CardTitle className="text-base font-normal text-muted-foreground">
+        <CardTitle className="text-base font-normal text-muted-foreground flex items-center gap-1.5">
           {title}
+          {info}
         </CardTitle>
-        {description && (
-          <CardDescription>{description}</CardDescription>
-        )}
+        {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
       {/* pr-4 keeps the right edge of the chart flush with the card padding */}
       <CardContent className="pl-2 pr-4">
