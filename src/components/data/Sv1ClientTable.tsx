@@ -71,7 +71,16 @@ export function Sv1ClientTable({ clients, isLoading, sortKey, sortDir, onSort }:
               </TableHead>
               <TableHead className="cursor-pointer select-none" onClick={() => onSort('hashrate')}>
                 <span className="flex items-center gap-1 hover:text-foreground transition-colors">
-                  Hashrate <SortIcon column="hashrate" sortKey={sortKey} sortDir={sortDir} />
+                  Estimated Hashrate <SortIcon column="hashrate" sortKey={sortKey} sortDir={sortDir} />
+                  <InfoPopover>
+                    Please note that this is a statistical estimation, as there's no way for a proxy
+                    to know the real hashrate of each worker. The proxy expects share submission to
+                    happen at some specific rate, based on the minimal worker hashrate provided at
+                    startup. As time goes on, it estimates the hashrate (and adjusts difficulty
+                    targets) according to the share submission rate of each worker. If some specific
+                    worker hashrate diverges too much from the minimal worker hashrate, it might
+                    take a while for this estimation to converge to the real hashrate.
+                  </InfoPopover>
                 </span>
               </TableHead>
               <TableHead className="hidden md:table-cell">Channel</TableHead>
@@ -98,7 +107,7 @@ export function Sv1ClientTable({ clients, isLoading, sortKey, sortDir, onSort }:
                   {client.user_identity || '-'}
                 </TableCell>
                 <TableCell className="font-mono">
-                  {client.hashrate !== null ? formatHashrate(client.hashrate) : '-'}
+                  {client.hashrate !== null ? `~${formatHashrate(client.hashrate)}` : '-'}
                 </TableCell>
                 <TableCell className="hidden md:table-cell font-mono text-xs text-muted-foreground">
                   {client.channel_id !== null ? client.channel_id : '-'}
