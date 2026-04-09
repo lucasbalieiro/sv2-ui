@@ -9,6 +9,11 @@ import type {
 } from './types.js';
 
 const LOG_STREAM_ID = 'mining-services' as const;
+
+// Snapshot only the most recent N log lines per container before collation.
+// This is a conservative and arbitrary window, not durable log history,
+// so older errors can fall out of scope if enough newer lines
+// are emitted after they occur.
 const RECENT_LOG_TAIL = 200;
 
 export type LogProvider = (
