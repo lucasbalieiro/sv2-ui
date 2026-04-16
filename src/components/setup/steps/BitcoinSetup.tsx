@@ -156,21 +156,21 @@ export function BitcoinSetup({ data, updateData, onNext }: StepProps) {
         <p id="socket-path-hint" className="text-xs text-muted-foreground mt-2">Click to edit if your socket is in a different location.</p>
 
         {isChecking && (
-          <div className="flex items-center gap-2 mt-3 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
+          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-md bg-muted/50 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
             <span className="text-xs">Checking socket path...</span>
           </div>
         )}
         {!isChecking && isValid && (
-          <div className="flex items-center gap-2 mt-3 text-sv2-green">
-            <CheckCircle2 className="h-4 w-4" />
-            <span className="text-xs">Socket is listening</span>
+          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-md bg-success/20 text-success">
+            <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+            <span className="text-xs font-medium">Socket is listening</span>
           </div>
         )}
         {!isChecking && socketError && (
-          <div className="flex items-start gap-2 mt-3 text-sv2-red">
+          <div className="flex items-start gap-2 mt-3 px-3 py-2 rounded-md bg-destructive/20 text-destructive">
             <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-            <span className="text-xs">{socketError}</span>
+            <span className="text-xs font-medium">{socketError}</span>
           </div>
         )}
       </div>
