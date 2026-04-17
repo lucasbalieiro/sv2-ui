@@ -424,18 +424,26 @@ async function startTranslator(configPath: string): Promise<void> {
  */
 async function startJdc(
   configPath: string,
-  bitcoinSocketPath: string
+  bitcoinSocketPath: string,
+  network: string
 ): Promise<void> {
   await removeContainer(JDC_CONTAINER);
+
+  // JDC resolves the socket path from its `network` setting: /root/.bitcoin/node.sock
+  // for mainnet, /root/.bitcoin/<network>/node.sock otherwise. Bind mount must match
+  // the path JDC actually looks at, not a hardcoded mainnet path.
+  const containerSocketPath = network === 'mainnet'
+    ? '/root/.bitcoin/node.sock'
+    : `/root/.bitcoin/${network}/node.sock`;
 
   const binds = isRunningInDocker
     ? [
       `${CONFIG_VOLUME}:/config:ro`,
-      `${bitcoinSocketPath}:/root/.bitcoin/node.sock:ro`,
+      `${bitcoinSocketPath}:${containerSocketPath}:ro`,
     ]
     : [
       `${configPath}:/config/jdc.toml:ro`,
-      `${bitcoinSocketPath}:/root/.bitcoin/node.sock:ro`,
+      `${bitcoinSocketPath}:${containerSocketPath}:ro`,
     ];
 
   const container = await docker.createContainer({
@@ -487,7 +495,7 @@ export async function startStack(
   // Start JDC first if in JD mode (Translator connects to JDC)
   if (data.mode === 'jd' && data.bitcoin) {
     const socketPath = expandHomePath(data.bitcoin.socket_path);
-    await startJdc(`${configDir}/jdc.toml`, socketPath);
+    await startJdc(`${configDir}/jdc.toml`, socketPath, data.bitcoin.network);
     console.log('Waiting for JDC to initialize...');
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
