@@ -8,6 +8,11 @@ import { PoolIcon } from '@/components/ui/pool-icon';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 import { useControlApi, getCurrentConfig } from '@/hooks/useControlApi';
 import { getPoolsForMode, type KnownPool } from '@/lib/pools';
+import {
+  getPoolAuthorityPubkeyError,
+  isValidPoolAuthorityPubkey,
+  stripWrappingQuotes,
+} from '@/lib/utils';
 import type { SetupData } from '@/components/setup/types';
 import {
   Loader2,
@@ -164,7 +169,10 @@ export function ConfigurationTab() {
     setEditIdentity('');
   };
 
-  const isPoolValid = !!editPool?.address && !!editPool?.authority_public_key;
+  const isPoolValid =
+    !!editPool?.address &&
+    !!editPool?.authority_public_key &&
+    isValidPoolAuthorityPubkey(editPool.authority_public_key);
   const isIdentityValid = editIdentity.trim().length > 0;
 
   const saveEdit = () => {
@@ -524,10 +532,15 @@ export function ConfigurationTab() {
                           id="edit-pool-pubkey"
                           type="text"
                           value={editPool?.authority_public_key ?? ''}
-                          onChange={e => setEditPool(prev => prev ? { ...prev, authority_public_key: e.target.value } : prev)}
+                          onChange={e => setEditPool(prev => prev ? { ...prev, authority_public_key: stripWrappingQuotes(e.target.value) } : prev)}
                           placeholder="Enter pool's authority public key"
                           className="w-full h-9 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
                         />
+                        {getPoolAuthorityPubkeyError(editPool?.authority_public_key ?? '') && (
+                          <p className="text-xs text-destructive mt-1">
+                            {getPoolAuthorityPubkeyError(editPool?.authority_public_key ?? '')}
+                          </p>
+                        )}
                       </div>
                     </div>
                   )}

@@ -16,7 +16,9 @@
     "build:all": "npm run build && npm run build:server",
     "preview": "vite preview",
     "lint": "eslint . --max-warnings 0",
+    "test": "node --test --import tsx src/**/*.test.ts",
     "test:server": "npm run test --prefix server",
+    "test:all": "npm run test && npm run test:server",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -25,6 +27,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-query": "^5.62.0",
     "bitcoinjs-lib": "^7.0.1",
+    "bs58check": "^4.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
