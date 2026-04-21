@@ -2,7 +2,13 @@ import { useState, useEffect } from 'react';
 import { StepProps } from '../types';
 import { AlertCircle, Info } from 'lucide-react';
 import { shouldAggregateTranslatorChannels } from '../poolRules';
-import { isValidBitcoinAddress, getBitcoinAddressError, getBitcoinAddressPlaceholder } from '@/lib/utils';
+import {
+  isValidBitcoinAddress,
+  getBitcoinAddressError,
+  getBitcoinAddressPlaceholder,
+  isTomlSafeIdentifier,
+  getIdentifierError,
+} from '@/lib/utils';
 
 const SRI_POOL_AUTHORITY_KEY = '9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72';
 
@@ -126,8 +132,11 @@ export function MiningIdentityStep({ data, updateData, onNext }: StepProps) {
     : 'Bitcoin address for receiving rewards during solo mining fallback';
 
   const isValid = useSriConventions
-    ? (!needsAddress || (payoutAddress.trim().length > 0 && isValidBitcoinAddress(payoutAddress.trim(), network)))
+    ? ((!needsAddress || (payoutAddress.trim().length > 0 && isValidBitcoinAddress(payoutAddress.trim(), network)))
+       && isTomlSafeIdentifier(finalIdentity)
+       && (!isJdMode || isValidBitcoinAddress(coinbaseAddress, network)))
     : (userIdentity.length > 0 &&
+       isTomlSafeIdentifier(userIdentity) &&
        (!requiresAddressIdentity || isValidBitcoinAddress(userIdentity, network)) &&
        (!isJdMode || isValidBitcoinAddress(coinbaseAddress, network)));
 
@@ -184,6 +193,9 @@ export function MiningIdentityStep({ data, updateData, onNext }: StepProps) {
               autoComplete="off"
               className="w-full h-10 px-3 rounded-lg border border-input bg-background focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all font-mono text-sm"
             />
+            {workerName && getIdentifierError(workerName) && (
+              <p className="text-xs text-destructive mt-1">{getIdentifierError(workerName)}</p>
+            )}
             <p className="text-xs text-muted-foreground mt-2">
               A name to identify this mining device
             </p>
@@ -268,6 +280,9 @@ export function MiningIdentityStep({ data, updateData, onNext }: StepProps) {
             />
             {requiresAddressIdentity && getBitcoinAddressError(userIdentity, network) && (
               <p className="text-xs text-destructive mt-1">{getBitcoinAddressError(userIdentity, network)}</p>
+            )}
+            {!requiresAddressIdentity && getIdentifierError(userIdentity) && (
+              <p className="text-xs text-destructive mt-1">{getIdentifierError(userIdentity)}</p>
             )}
             <p className="text-xs text-muted-foreground mt-2">
               {identityHelpText}

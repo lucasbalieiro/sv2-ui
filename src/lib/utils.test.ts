@@ -5,6 +5,8 @@ import {
   stripWrappingQuotes,
   isValidPoolAuthorityPubkey,
   getPoolAuthorityPubkeyError,
+  isTomlSafeIdentifier,
+  getIdentifierError,
 } from './utils';
 
 const VALID_PUBKEYS = [
@@ -104,4 +106,64 @@ test('getPoolAuthorityPubkeyError: returns a message for a tampered-checksum pub
   const pk = VALID_PUBKEYS[0];
   const flipped = pk.slice(0, -1) + (pk.slice(-1) === 'a' ? 'b' : 'a');
   assert.match(getPoolAuthorityPubkeyError(flipped) ?? '', /invalid/i);
+});
+
+test('isTomlSafeIdentifier: accepts a plain username', () => {
+  assert.equal(isTomlSafeIdentifier('miner.worker1'), true);
+});
+
+test('isTomlSafeIdentifier: accepts an SRI-format identity with slashes', () => {
+  assert.equal(isTomlSafeIdentifier('sri/solo/bc1qexampleaddress/worker1'), true);
+});
+
+test('isTomlSafeIdentifier: rejects a value containing a double quote', () => {
+  assert.equal(isTomlSafeIdentifier('worker"1'), false);
+});
+
+test('isTomlSafeIdentifier: rejects a value containing a backslash', () => {
+  assert.equal(isTomlSafeIdentifier('worker\\1'), false);
+});
+
+test('isTomlSafeIdentifier: rejects a value containing a newline', () => {
+  assert.equal(isTomlSafeIdentifier('worker\n1'), false);
+});
+
+test('isTomlSafeIdentifier: rejects a value containing a tab', () => {
+  assert.equal(isTomlSafeIdentifier('worker\t1'), false);
+});
+
+test('isTomlSafeIdentifier: rejects a value containing a control character', () => {
+  assert.equal(isTomlSafeIdentifier('worker\x07bell'), false);
+});
+
+test('isTomlSafeIdentifier: rejects leading whitespace', () => {
+  assert.equal(isTomlSafeIdentifier(' worker1'), false);
+});
+
+test('isTomlSafeIdentifier: rejects trailing whitespace', () => {
+  assert.equal(isTomlSafeIdentifier('worker1 '), false);
+});
+
+test('isTomlSafeIdentifier: rejects an empty string', () => {
+  assert.equal(isTomlSafeIdentifier(''), false);
+});
+
+test('getIdentifierError: returns null for empty input (required-ness is enforced separately)', () => {
+  assert.equal(getIdentifierError(''), null);
+});
+
+test('getIdentifierError: returns null for a valid identifier', () => {
+  assert.equal(getIdentifierError('miner.worker1'), null);
+});
+
+test('getIdentifierError: returns a whitespace-specific message for padded input', () => {
+  assert.match(getIdentifierError(' miner ') ?? '', /whitespace/i);
+});
+
+test('getIdentifierError: returns a not-allowed-characters message for a quote', () => {
+  assert.match(getIdentifierError('mi"ner') ?? '', /not allowed|invalid|characters/i);
+});
+
+test('getIdentifierError: returns a not-allowed-characters message for a backslash', () => {
+  assert.match(getIdentifierError('mi\\ner') ?? '', /not allowed|invalid|characters/i);
 });

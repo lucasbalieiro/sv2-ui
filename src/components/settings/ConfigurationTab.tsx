@@ -9,7 +9,9 @@ import { useSetupStatus } from '@/hooks/useSetupStatus';
 import { useControlApi, getCurrentConfig } from '@/hooks/useControlApi';
 import { getPoolsForMode, type KnownPool } from '@/lib/pools';
 import {
+  getIdentifierError,
   getPoolAuthorityPubkeyError,
+  isTomlSafeIdentifier,
   isValidPoolAuthorityPubkey,
   stripWrappingQuotes,
 } from '@/lib/utils';
@@ -173,7 +175,7 @@ export function ConfigurationTab() {
     !!editPool?.address &&
     !!editPool?.authority_public_key &&
     isValidPoolAuthorityPubkey(editPool.authority_public_key);
-  const isIdentityValid = editIdentity.trim().length > 0;
+  const isIdentityValid = isTomlSafeIdentifier(editIdentity);
 
   const saveEdit = () => {
     if (!config) return;
@@ -620,19 +622,24 @@ export function ConfigurationTab() {
                 disabled={editing !== null && editing !== 'identity'}
                 display={<p className="font-mono text-xs text-muted-foreground truncate">{identity}</p>}
                 editContent={
-                  <input
-                    type="text"
-                    value={editIdentity}
-                    onChange={(e) => setEditIdentity(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && isIdentityValid && !isSaving) saveEdit();
-                      if (e.key === 'Escape') cancelEdit();
-                    }}
-                    autoFocus
-                    autoComplete="off"
-                    placeholder={identityLabel}
-                    className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
-                  />
+                  <div>
+                    <input
+                      type="text"
+                      value={editIdentity}
+                      onChange={(e) => setEditIdentity(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isIdentityValid && !isSaving) saveEdit();
+                        if (e.key === 'Escape') cancelEdit();
+                      }}
+                      autoFocus
+                      autoComplete="off"
+                      placeholder={identityLabel}
+                      className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
+                    />
+                    {getIdentifierError(editIdentity) && (
+                      <p className="text-xs text-destructive mt-1">{getIdentifierError(editIdentity)}</p>
+                    )}
+                  </div>
                 }
               />
             );

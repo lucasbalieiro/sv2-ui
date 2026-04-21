@@ -152,3 +152,23 @@ export function getPoolAuthorityPubkeyError(v: string): string | null {
   if (!v) return null;
   return isValidPoolAuthorityPubkey(v) ? null : 'Invalid authority public key';
 }
+
+// Characters that would break a TOML basic string ("..."): the quote itself,
+// the escape character, and any C0/DEL control character.
+// eslint-disable-next-line no-control-regex
+const TOML_UNSAFE_CHARS = /["\\\u0000-\u001F\u007F]/;
+
+export function isTomlSafeIdentifier(v: string): boolean {
+  if (!v) return false;
+  if (v !== v.trim()) return false;
+  return !TOML_UNSAFE_CHARS.test(v);
+}
+
+export function getIdentifierError(v: string): string | null {
+  if (!v) return null;
+  if (v !== v.trim()) return 'Leading or trailing whitespace is not allowed';
+  if (TOML_UNSAFE_CHARS.test(v)) {
+    return 'Contains characters that are not allowed (quotes, backslashes, control characters)';
+  }
+  return null;
+}
