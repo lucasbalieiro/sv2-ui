@@ -8,6 +8,13 @@ import { PoolIcon } from '@/components/ui/pool-icon';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 import { useControlApi, getCurrentConfig } from '@/hooks/useControlApi';
 import { getPoolsForMode, type KnownPool } from '@/lib/pools';
+import {
+  getIdentifierError,
+  getPoolAuthorityPubkeyError,
+  isTomlSafeIdentifier,
+  isValidPoolAuthorityPubkey,
+  stripWrappingQuotes,
+} from '@/lib/utils';
 import type { SetupData } from '@/components/setup/types';
 import {
   Loader2,
@@ -164,8 +171,11 @@ export function ConfigurationTab() {
     setEditIdentity('');
   };
 
-  const isPoolValid = !!editPool?.address && !!editPool?.authority_public_key;
-  const isIdentityValid = editIdentity.trim().length > 0;
+  const isPoolValid =
+    !!editPool?.address &&
+    !!editPool?.authority_public_key &&
+    isValidPoolAuthorityPubkey(editPool.authority_public_key);
+  const isIdentityValid = isTomlSafeIdentifier(editIdentity);
 
   const saveEdit = () => {
     if (!config) return;
@@ -524,10 +534,15 @@ export function ConfigurationTab() {
                           id="edit-pool-pubkey"
                           type="text"
                           value={editPool?.authority_public_key ?? ''}
-                          onChange={e => setEditPool(prev => prev ? { ...prev, authority_public_key: e.target.value } : prev)}
+                          onChange={e => setEditPool(prev => prev ? { ...prev, authority_public_key: stripWrappingQuotes(e.target.value) } : prev)}
                           placeholder="Enter pool's authority public key"
                           className="w-full h-9 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
                         />
+                        {getPoolAuthorityPubkeyError(editPool?.authority_public_key ?? '') && (
+                          <p className="text-xs text-destructive mt-1">
+                            {getPoolAuthorityPubkeyError(editPool?.authority_public_key ?? '')}
+                          </p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -607,19 +622,24 @@ export function ConfigurationTab() {
                 disabled={editing !== null && editing !== 'identity'}
                 display={<p className="font-mono text-xs text-muted-foreground truncate">{identity}</p>}
                 editContent={
-                  <input
-                    type="text"
-                    value={editIdentity}
-                    onChange={(e) => setEditIdentity(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && isIdentityValid && !isSaving) saveEdit();
-                      if (e.key === 'Escape') cancelEdit();
-                    }}
-                    autoFocus
-                    autoComplete="off"
-                    placeholder={identityLabel}
-                    className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
-                  />
+                  <div>
+                    <input
+                      type="text"
+                      value={editIdentity}
+                      onChange={(e) => setEditIdentity(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isIdentityValid && !isSaving) saveEdit();
+                        if (e.key === 'Escape') cancelEdit();
+                      }}
+                      autoFocus
+                      autoComplete="off"
+                      placeholder={identityLabel}
+                      className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
+                    />
+                    {getIdentifierError(editIdentity) && (
+                      <p className="text-xs text-destructive mt-1">{getIdentifierError(editIdentity)}</p>
+                    )}
+                  </div>
                 }
               />
             );

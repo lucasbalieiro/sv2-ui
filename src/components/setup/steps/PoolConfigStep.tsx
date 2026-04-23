@@ -3,6 +3,11 @@ import { StepProps, PoolConfig } from '../types';
 import { Check } from 'lucide-react';
 import { PoolIcon } from '@/components/ui/pool-icon';
 import { POOL_MINING_NO_JD, POOL_MINING_JD, SOLO_POOLS, type KnownPool } from '@/lib/pools';
+import {
+  getPoolAuthorityPubkeyError,
+  isValidPoolAuthorityPubkey,
+  stripWrappingQuotes,
+} from '@/lib/utils';
 
 export function PoolConfigStep({ data, updateData, onNext }: StepProps) {
   const isSoloMode = data.miningMode === 'solo';
@@ -37,7 +42,14 @@ export function PoolConfigStep({ data, updateData, onNext }: StepProps) {
   };
 
   const handleCustomChange = (field: keyof PoolConfig, value: string | number) => {
-    const updated = { ...customPool, [field]: value };
+    // Normalize the stored pubkey so the TOML writer receives a clean value.
+    // isValidPoolAuthorityPubkey also strips internally for its own robustness,
+    // but the stored value has to be unquoted independently.
+    const normalized =
+      field === 'authority_public_key' && typeof value === 'string'
+        ? stripWrappingQuotes(value)
+        : value;
+    const updated = { ...customPool, [field]: normalized };
     setCustomPool(updated);
     updateData({ pool: updated });
   };
@@ -48,7 +60,10 @@ export function PoolConfigStep({ data, updateData, onNext }: StepProps) {
     updateData({ pool: customPool });
   };
 
-  const isValid = data.pool && data.pool.address && data.pool.authority_public_key;
+  const isValid =
+    data.pool &&
+    data.pool.address &&
+    isValidPoolAuthorityPubkey(data.pool.authority_public_key);
 
   return (
     <div className="space-y-8">
@@ -182,6 +197,11 @@ export function PoolConfigStep({ data, updateData, onNext }: StepProps) {
               autoComplete="off"
               className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
             />
+            {getPoolAuthorityPubkeyError(customPool.authority_public_key) && (
+              <p className="text-xs text-destructive mt-1">
+                {getPoolAuthorityPubkeyError(customPool.authority_public_key)}
+              </p>
+            )}
             <p id="pool-pubkey-hint" className="text-xs text-muted-foreground mt-2">The pool's public key for Noise protocol authentication</p>
           </div>
         </div>

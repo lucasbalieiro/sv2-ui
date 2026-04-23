@@ -2,6 +2,7 @@ import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
+import bs58check from 'bs58check';
 
 // Required for taproot (P2TR) address validation
 bitcoin.initEccLib(ecc);
@@ -115,4 +116,59 @@ export function getBitcoinAddressError(addr: string, network: 'mainnet' | 'testn
  */
 export function getBitcoinAddressPlaceholder(network: 'mainnet' | 'testnet4'): string {
   return network === 'mainnet' ? 'bc1q...' : 'tb1q...';
+}
+
+// Pubkeys in pool docs / Discord are almost always shown wrapped in quotes,
+// and users copy them with the quotes. Strip one matched pair, then trim.
+export function stripWrappingQuotes(v: string): string {
+  const trimmed = v.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+// The SRI Noise-protocol authority key is base58check-encoded, so a corrupted
+// character or missing byte fails the checksum — which is exactly what
+// copy-paste mistakes produce. Wrapping quotes (the dominant mistake from
+// docs/Discord) are stripped here so the caller does not have to remember to
+// normalize before calling.
+export function isValidPoolAuthorityPubkey(v: string): boolean {
+  const normalized = stripWrappingQuotes(v);
+  if (!normalized) return false;
+  try {
+    bs58check.decode(normalized);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getPoolAuthorityPubkeyError(v: string): string | null {
+  if (!v) return null;
+  return isValidPoolAuthorityPubkey(v) ? null : 'Invalid authority public key';
+}
+
+// Characters that would break a TOML basic string ("..."): the quote itself,
+// the escape character, and any C0/DEL control character.
+// eslint-disable-next-line no-control-regex
+const TOML_UNSAFE_CHARS = /["\\\u0000-\u001F\u007F]/;
+
+export function isTomlSafeIdentifier(v: string): boolean {
+  if (!v) return false;
+  if (v !== v.trim()) return false;
+  return !TOML_UNSAFE_CHARS.test(v);
+}
+
+export function getIdentifierError(v: string): string | null {
+  if (!v) return null;
+  if (v !== v.trim()) return 'Leading or trailing whitespace is not allowed';
+  if (TOML_UNSAFE_CHARS.test(v)) {
+    return 'Contains characters that are not allowed (quotes, backslashes, control characters)';
+  }
+  return null;
 }
