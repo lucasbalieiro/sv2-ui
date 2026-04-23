@@ -459,7 +459,7 @@ async function startJdc(
         '9091/tcp': [{ HostPort: '9091' }],
       },
       NetworkMode: NETWORK_NAME,
-      RestartPolicy: { Name: 'always' },
+      RestartPolicy: { Name: 'no' },
     },
     ExposedPorts: {
       '34265/tcp': {},
