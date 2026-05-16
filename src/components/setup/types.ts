@@ -12,7 +12,7 @@ export interface PoolConfig {
   authority_public_key: string;
 }
 
-export type OperatingSystem = 'linux' | 'macos';
+export type OperatingSystem = 'linux' | 'macos' | 'umbrel';
 export type BitcoinCoreVersion = '30.2' | '31.0';
 
 export interface BitcoinConfig {

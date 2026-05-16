@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { StepProps, BitcoinConfig, BitcoinCoreVersion, OperatingSystem } from '../types';
 import { Bitcoin, Apple, Terminal, Pencil, Check, Loader2, AlertCircle, CheckCircle2, RotateCw } from 'lucide-react';
+import { UmbrelIcon } from '@/components/ui/umbrel-icon';
 import { useBitcoinSocketValidation } from '@/hooks/useBitcoinSocketValidation';
 
 function getDefaultDataDir(os: OperatingSystem): string {
+  if (os === 'umbrel') return '~/.bitcoin';
   return os === 'linux' ? '~/.bitcoin' : '~/Library/Application Support/Bitcoin';
 }
 
@@ -56,8 +58,7 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
   const resetPath = () => { setManualSocketPath(''); setIsEditingPath(false); };
 
   const selBtn = (active: boolean) =>
-    `relative p-4 rounded-xl border transition-all flex flex-col items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
-      active ? 'border-primary bg-primary/[0.04]' : 'border-border bg-card hover:border-primary/45 hover:bg-primary/[0.02]'
+    `relative p-4 rounded-xl border transition-all flex flex-col items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${active ? 'border-primary bg-primary/[0.04]' : 'border-border bg-card hover:border-primary/45 hover:bg-primary/[0.02]'
     }`;
 
   return (
@@ -76,7 +77,7 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
 
       <div role="group" aria-labelledby="os-label">
         <p id="os-label" className="block text-sm font-medium mb-3">Operating System</p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <button
             type="button"
             onClick={() => { setOs('linux'); resetPath(); }}
@@ -96,6 +97,16 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
             {os === 'macos' && <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary flex items-center justify-center" aria-hidden="true"><Check className="w-3 h-3 text-background" /></div>}
             <Apple className="h-5 w-5" aria-hidden="true" />
             <span className={`font-medium text-sm ${os === 'macos' ? 'text-primary' : ''}`}>macOS</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => { setOs('umbrel'); resetPath(); }}
+            className={selBtn(os === 'umbrel')}
+            aria-pressed={os === 'umbrel'}
+          >
+            {os === 'umbrel' && <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary flex items-center justify-center" aria-hidden="true"><Check className="w-3 h-3 text-background" /></div>}
+            <UmbrelIcon className="h-5 w-5" aria-hidden="true" />
+            <span className={`font-medium text-sm ${os === 'umbrel' ? 'text-primary' : ''}`}>Umbrel</span>
           </button>
         </div>
         <p className="text-xs text-muted-foreground mt-2">
@@ -141,6 +152,19 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
             Select your Bitcoin Core version to continue.
           </p>
         )}
+        {os === 'umbrel' && coreVersion && (
+          <div className="mb-6 p-3 rounded-xl bg-warning/[0.08] text-sm text-warning flex gap-2 items-start">
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="font-medium">Umbrel Setup Instructions</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>Make sure your Bitcoin Umbrel app is at version <strong>1.3.0</strong> or higher</li>
+                <li>To activate the IPC in your Umbrel node go to <strong>Settings → Interfaces</strong> tab</li>
+                <li>Enable <strong>IPC Mining Interface</strong></li>
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
 
       <div role="group" aria-labelledby="network-label">
@@ -176,6 +200,7 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
       <div>
         <label htmlFor="data-dir" className="block text-sm font-medium mb-2">
           Custom Data Directory <span className="text-muted-foreground">(optional)</span>
+          {os === 'umbrel' && <span className="ml-2 text-xs text-amber-600">(managed by Umbrel)</span>}
         </label>
         <input
           id="data-dir"
@@ -184,16 +209,31 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
           onChange={(e) => { setCustomDataDir(e.target.value); resetPath(); }}
           placeholder={getDefaultDataDir(os)}
           autoComplete="off"
-          className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
+          disabled={os === 'umbrel'}
+          readOnly={os === 'umbrel'}
+          className={`w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all ${os === 'umbrel' ? 'bg-muted cursor-not-allowed opacity-60' : ''}`}
         />
         <p className="text-xs text-muted-foreground mt-2">
-          Leave empty to use the default. Only set if you used a custom <code className="bg-muted px-1 py-0.5 rounded">-datadir</code>.
+          {os === 'umbrel' ? (
+            <span className="text-amber-600">Data directory is fixed for Umbrel nodes.</span>
+          ) : (
+            <>
+              Leave empty to use the default. Only set if you used a custom <code className="bg-muted px-1 py-0.5 rounded">-datadir</code>.
+            </>
+          )}
         </p>
       </div>
 
       <div className="p-4 rounded-xl bg-muted/40">
-        <label htmlFor="socket-path" className="block text-sm font-medium mb-2">IPC Socket Path</label>
-        {isEditingPath ? (
+        <label htmlFor="socket-path" className="block text-sm font-medium mb-2">
+          IPC Socket Path
+          {os === 'umbrel' && <span className="ml-2 text-xs text-amber-600">(managed by Umbrel)</span>}
+        </label>
+        {os === 'umbrel' ? (
+          <div className="w-full bg-muted/50 p-3 rounded-lg">
+            <code className="text-sm font-mono break-all text-muted-foreground">{socketPath}</code>
+          </div>
+        ) : isEditingPath ? (
           <input
             id="socket-path"
             type="text"
@@ -219,7 +259,13 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
             </div>
           </button>
         )}
-        <p id="socket-path-hint" className="text-xs text-muted-foreground mt-2">Click to edit if your socket is in a different location.</p>
+        <p id="socket-path-hint" className="text-xs text-muted-foreground mt-2">
+          {os === 'umbrel' ? (
+            <span className="text-amber-600">Socket path is fixed for Umbrel nodes.</span>
+          ) : (
+            'Click to edit if your socket is in a different location.'
+          )}
+        </p>
 
         {isChecking && (
           <div
