@@ -103,10 +103,10 @@ app.get('/api/status', async (_req, res) => {
   try {
     const state = await loadState();
     const containers = await getStackStatus(state.mode);
-    
+
     const running = state.mode === 'jd'
       ? (containers.translator?.status === 'healthy' || containers.translator?.status === 'starting') &&
-        (containers.jdc?.status === 'healthy' || containers.jdc?.status === 'starting')
+      (containers.jdc?.status === 'healthy' || containers.jdc?.status === 'starting')
       : (containers.translator?.status === 'healthy' || containers.translator?.status === 'starting');
 
     const response: StatusResponse = {
@@ -200,6 +200,116 @@ app.post('/api/validate/bitcoin-socket', async (req, res) => {
   });
   return res.json(result);
 });
+
+/**
+ * POST /api/bitcoin-rpc-info - Get Bitcoin Core version and IBD status via RPC
+ */
+app.post('/api/bitcoin-rpc-info', async (req, res) => {
+  const { socket_path, data_dir, network } = req.body;
+
+  if (!socket_path && !data_dir) {
+    return res.status(400).json({
+      version: null,
+      isInIBD: false,
+      upgradeRequired: false,
+      error: 'socket_path or data_dir is required',
+    });
+  }
+
+  const result = await getBitcoinRpcInfo(socket_path, data_dir, network);
+
+  if (result.version && !isSupportedBitcoinCoreVersion(result.version)) {
+    result.upgradeRequired = true;
+    result.version = null;
+  }
+
+  return res.json(result);
+});
+
+async function getBitcoinRpcInfo(
+  socketPath: string,
+  dataDir: string,
+  network: string | undefined
+): Promise<{
+  version: string | null;
+  isInIBD: boolean;
+  upgradeRequired: boolean;
+  error: string | null;
+}> {
+  const resolvedDataDir = expandHomePath(dataDir || getDataDirFromSocket(socketPath));
+  const cookiePath = path.join(resolvedDataDir, '.cookie');
+
+  let cookie: string;
+  try {
+    cookie = (await fs.readFile(cookiePath, 'utf-8')).trim();
+  } catch (err) {
+    return { version: null, isInIBD: false, upgradeRequired: false, error: 'Cannot read cookie file' };
+  }
+
+  const port = network === 'testnet4' ? 44332 : 8332;
+  const url = `http://127.0.0.1:${port}/`;
+
+  const versionResult = await callBitcoinRpc(url, cookie, 'getnetworkinfo');
+  if (versionResult.error) {
+    return { version: null, isInIBD: false, upgradeRequired: false, error: versionResult.error };
+  }
+  console.log(versionResult);
+
+  const versionResultData = versionResult.result as { version?: number } | undefined;
+  const rawVersion = versionResultData?.version;
+  let version: string | null = null;
+  if (rawVersion) {
+    const major = Math.floor(rawVersion / 100000);
+    const minor = Math.floor((rawVersion % 10000) / 1000);
+    const patch = rawVersion % 1000;
+    version = patch > 0 ? `${major}.${minor}.${patch}` : `${major}.${minor}`;
+  }
+
+  const chainInfo = await callBitcoinRpc(url, cookie, 'getblockchaininfo');
+  const chainInfoData = chainInfo.result as { initialblockdownload?: boolean } | undefined;
+  const isInIBD = chainInfoData?.initialblockdownload ?? false;
+
+  return { version, isInIBD, upgradeRequired: false, error: null };
+}
+
+function getDataDirFromSocket(socketPath: string): string {
+  if (socketPath.includes('/testnet4/')) {
+    return socketPath.split('/testnet4/')[0];
+  }
+  return socketPath.split('/node.sock')[0];
+}
+
+async function callBitcoinRpc(
+  url: string,
+  cookie: string,
+  method: string,
+  params: unknown[] = []
+): Promise<{ result?: unknown; error?: string }> {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'Authorization': `Basic ${Buffer.from(`${cookie}`).toString('base64')}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '1.0',
+        id: 'sv2-ui',
+        method,
+        params,
+      }),
+    });
+
+    console.log(response.headers);
+    const data = await response.json();
+    if (data.error) {
+      return { error: data.error.message };
+    }
+    return { result: data.result };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'RPC call failed' };
+  }
+}
 
 async function validateBitcoinSocket(
   socketPath: string,
@@ -455,9 +565,9 @@ app.post('/api/setup', async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('Setup error:', error);
-    const response: SetupResponse = { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+    const response: SetupResponse = {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
     res.status(500).json(response);
   }
@@ -500,7 +610,7 @@ app.post('/api/restart', async (_req, res) => {
 
     await stopStack();
     await startStack(state.data, CONFIG_DIR);
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Restart error:', error);
@@ -515,14 +625,14 @@ app.post('/api/reset', async (_req, res) => {
   try {
     // Stop containers first
     await stopStack();
-    
+
     // Delete state file
     try {
       await fs.unlink(STATE_FILE);
     } catch {
       // File might not exist, that's fine
     }
-    
+
     // Delete config files
     try {
       await fs.unlink(path.join(CONFIG_DIR, 'translator.toml'));
@@ -530,7 +640,7 @@ app.post('/api/reset', async (_req, res) => {
     } catch {
       // Files might not exist
     }
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Reset error:', error);
@@ -603,7 +713,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 app.listen(PORT, () => {
   const dockerConnection = getDockerConnectionInfo();
-  
+
   console.log(`sv2-ui server running on http://localhost:${PORT}`);
   console.log(`Config directory: ${CONFIG_DIR}`);
   console.log(`Docker: ${dockerConnection.endpoint} (${dockerConnection.source})`);

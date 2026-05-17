@@ -3,6 +3,7 @@ import { StepProps, BitcoinConfig, BitcoinCoreVersion, OperatingSystem } from '.
 import { Bitcoin, Apple, Terminal, Pencil, Check, Loader2, AlertCircle, CheckCircle2, RotateCw } from 'lucide-react';
 import { UmbrelIcon } from '@/components/ui/umbrel-icon';
 import { useBitcoinSocketValidation } from '@/hooks/useBitcoinSocketValidation';
+import { useBitcoinRpcInfo } from '@/hooks/useBitcoinRpcInfo';
 
 function getDefaultDataDir(os: OperatingSystem): string {
   if (os === 'umbrel') return '~/.bitcoin';
@@ -54,6 +55,19 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
     isRetryable,
     retry: retrySocketValidation,
   } = useBitcoinSocketValidation(socketPath, network, coreVersion);
+
+  const effectiveDataDir = customDataDir.trim() || getDefaultDataDir(os);
+  const { version: autoDetectedVersion, isInIBD, upgradeRequired } = useBitcoinRpcInfo(
+    socketPath,
+    effectiveDataDir,
+    network
+  );
+
+  useEffect(() => {
+    if (autoDetectedVersion && !coreVersion) {
+      setCoreVersion(autoDetectedVersion);
+    }
+  }, [autoDetectedVersion, coreVersion]);
 
   const resetPath = () => { setManualSocketPath(''); setIsEditingPath(false); };
 
@@ -151,6 +165,12 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
           <p className="text-xs text-destructive mt-2">
             Select your Bitcoin Core version to continue.
           </p>
+        )}
+        {upgradeRequired && (
+          <div className="mt-4 p-3 rounded-xl bg-warning/[0.08] text-sm text-warning flex gap-2 items-start">
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
+            Detected Bitcoin Core version is not supported. Please upgrade to 30.2 or 31.0.
+          </div>
         )}
         {os === 'umbrel' && coreVersion && (
           <div className="mb-6 p-3 rounded-xl bg-warning/[0.08] text-sm text-warning flex gap-2 items-start">
@@ -317,11 +337,18 @@ export function BitcoinSetup({ data, updateData, onNext, notice, onDismissNotice
         )}
       </div>
 
+      {isInIBD && (
+        <div className="p-3 rounded-xl bg-destructive/[0.08] text-sm text-destructive flex gap-2 items-start">
+          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
+          Bitcoin node is still syncing (IBD). Wait for the synchronization to finish.
+        </div>
+      )}
+
       <div className="flex justify-center">
         <button
           type="button"
           onClick={onNext}
-          disabled={!coreVersion || isChecking || !!socketError}
+          disabled={!coreVersion || isChecking || !!socketError || isInIBD}
           className="h-11 px-10 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Continue
