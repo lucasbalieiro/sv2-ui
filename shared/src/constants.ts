@@ -16,7 +16,6 @@ export const RPC_PORTS: Record<BitcoinNetwork, number> = {
 };
 
 export const CONTAINER_NAMES = {
-  network: 'sv2-network',
   configVolume: 'sv2-config',
   translator: 'sv2-translator',
   jdc: 'sv2-jdc',

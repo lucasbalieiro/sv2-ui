@@ -616,15 +616,11 @@ app.post('/api/reset', async (_req, res) => {
 
 /**
  * Get the URL for connecting to a container's API.
- * Uses container name on sv2-network (Docker) or localhost (development).
+ * Containers use host networking, so they're reachable via host.docker.internal (Docker) or localhost (development).
  */
-function getContainerUrl(containerName: string, port: number): string {
-  // In Docker, containers are on sv2-network and can be reached by name
-  // In development, containers expose ports on localhost
-  // Try container name first (works when sv2-ui is on sv2-network)
-  // The container name is the hostname on the Docker network
+function getContainerUrl(_containerName: string, port: number): string {
   return process.env.NODE_ENV === 'production'
-    ? `http://${containerName}:${port}`
+    ? `http://host.docker.internal:${port}`
     : `http://localhost:${port}`;
 }
 

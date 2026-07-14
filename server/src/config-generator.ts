@@ -69,10 +69,9 @@ export function generateTranslatorConfig(data: SetupData): string {
     throw new Error('Pool and translator configuration are required');
   }
 
-  // If JD mode, translator connects to JDC container; otherwise directly to pool
-  // Both containers are on sv2-network, so we can use the container name as hostname
-  // (hostname resolution supported since sv2-apps PR #286)
-  const upstreamAddress = isJdMode ? 'sv2-jdc' : pool!.address;
+  // If JD mode, translator connects to JDC; otherwise directly to pool
+  // Both use host networking, so we can use localhost
+  const upstreamAddress = isJdMode ? 'localhost' : pool!.address;
   const upstreamPort = isJdMode ? JDC_PORT : pool!.port;
   // When connecting to local JDC, we don't need authority key (using hardcoded keys)
   // When connecting to external pool, we need the pool's authority key

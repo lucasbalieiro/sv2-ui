@@ -148,7 +148,6 @@ function refreshDockerConnection(): void {
   docker = new Docker(dockerConnection.options);
 }
 
-const NETWORK_NAME = CONTAINER_NAMES.network;
 const CONFIG_VOLUME = CONTAINER_NAMES.configVolume;
 const TRANSLATOR_CONTAINER = CONTAINER_NAMES.translator;
 const JDC_CONTAINER = CONTAINER_NAMES.jdc;
@@ -629,55 +628,6 @@ export async function readContainerLogs(
   }
 }
 
-/**
- * Ensure the sv2 network exists
- */
-async function ensureNetwork(): Promise<void> {
-  try {
-    const network = docker.getNetwork(NETWORK_NAME);
-    await network.inspect();
-  } catch {
-    console.log(`Creating network ${NETWORK_NAME}...`);
-    await docker.createNetwork({
-      Name: NETWORK_NAME,
-      Driver: 'bridge',
-    });
-  }
-}
-
-/**
- * Connect sv2-ui container to the sv2-network so it can reach other containers.
- * This is needed for the proxy to communicate with Translator/JDC monitoring APIs.
- */
-async function connectSv2UiToNetwork(): Promise<void> {
-  try {
-    // Find sv2-ui container (could be named sv2-ui or sv2-ui-test)
-    const containers = await docker.listContainers({ all: true });
-    const sv2UiContainer = containers.find(c =>
-      c.Names.some(n => n === '/sv2-ui' || n === '/sv2-ui-test')
-    );
-
-    if (!sv2UiContainer) {
-      // Not running in Docker (development mode)
-      return;
-    }
-
-    const network = docker.getNetwork(NETWORK_NAME);
-    const networkInfo = await network.inspect();
-
-    // Check if already connected
-    if (networkInfo.Containers && networkInfo.Containers[sv2UiContainer.Id]) {
-      return;
-    }
-
-    console.log('Connecting sv2-ui to sv2-network...');
-    await network.connect({ Container: sv2UiContainer.Id });
-  } catch {
-    // Non-fatal: sv2-ui stays on its default network (bridge).
-    // The API proxy will still work via exposed ports on localhost.
-    console.log('Note: Could not connect to sv2-network');
-  }
-}
 
 /**
  * Pull the latest version of an image from Docker Hub.
@@ -774,16 +724,8 @@ async function startTranslator(configPath: string, image: string): Promise<void>
     StopSignal: 'SIGINT',
     HostConfig: {
       Binds: binds,
-      PortBindings: {
-        '34255/tcp': [{ HostPort: '34255' }],
-        '9092/tcp': [{ HostPort: '9092' }],
-      },
-      NetworkMode: NETWORK_NAME,
+      NetworkMode: 'host',
       RestartPolicy: { Name: 'no' },
-    },
-    ExposedPorts: {
-      '34255/tcp': {},
-      '9092/tcp': {},
     },
   });
 
@@ -826,16 +768,8 @@ async function startJdc(
     StopSignal: 'SIGINT',
     HostConfig: {
       Binds: binds,
-      PortBindings: {
-        '34265/tcp': [{ HostPort: '34265' }],
-        '9091/tcp': [{ HostPort: '9091' }],
-      },
-      NetworkMode: NETWORK_NAME,
+      NetworkMode: 'host',
       RestartPolicy: { Name: 'no' },
-    },
-    ExposedPorts: {
-      '34265/tcp': {},
-      '9091/tcp': {},
     },
   });
 
@@ -852,11 +786,6 @@ export async function startStack(
   configDir: string
 ): Promise<void> {
   await ensureDockerAvailable();
-
-  // Ensure network exists
-  await ensureNetwork();
-  // Connect sv2-ui to the network so it can proxy API requests
-  await connectSv2UiToNetwork();
 
   const imageSelection = getImageSelectionForSetup(data);
 
