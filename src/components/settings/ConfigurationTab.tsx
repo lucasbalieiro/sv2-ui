@@ -654,7 +654,10 @@ export function ConfigurationTab() {
                           expanded={showFallbackIdentityFields || fallbackIdentityBlocked}
                           hasBlockingError={fallbackIdentityBlocked}
                           onToggle={() => setShowFallbackIdentityFields((current) => !current)}
-                          onChange={(index, nextPool) => updateEditPoolIdentity(index + 1, nextPool)}
+                          onChange={(index, nextPool) => {
+                            setShowFallbackIdentityFields(true);
+                            updateEditPoolIdentity(index + 1, nextPool);
+                          }}
                           onFieldBlockingError={(index, error) => {
                             setEditFallbackIdentityErrors((current) => ({ ...current, [index + 1]: error }));
                           }}

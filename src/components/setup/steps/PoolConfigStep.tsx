@@ -63,6 +63,7 @@ export function PoolConfigStep({ data, updateData, onNext }: PoolConfigStepProps
   };
 
   const updateFallbackPool = (index: number, pool: PoolConfig) => {
+    setShowFallbackIdentityFields(true);
     updateSelectedPools(selectedPools.map((item, i) => (
       i === index + 1 ? pool : item
     )));
