@@ -324,3 +324,75 @@ test('getWorkerNameError accepts normal worker names', () => {
   assert.equal(getWorkerNameError('worker1'), null);
   assert.equal(getWorkerNameError(''), null);
 });
+
+test('normalizePoolPriorityIdentities re-syncs an inherited fallback after the primary payout address is corrected', () => {
+  const previousPrimary = {
+    ...STANDARD_POOL,
+    user_identity: '',
+  };
+  const nextPrimary = {
+    ...STANDARD_POOL,
+    user_identity: MAINNET_ADDRESS,
+  };
+  const fallback = {
+    ...STANDARD_POOL,
+    address: 'fallback.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, fallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities re-syncs an inherited fallback after a full donation is replaced by a payout address', () => {
+  const previousPrimary = {
+    ...SRI_POOL,
+    user_identity: 'sri/donate',
+  };
+  const nextPrimary = {
+    ...SRI_POOL,
+    user_identity: `sri/donate/25/${MAINNET_ADDRESS}/worker1`,
+  };
+  const fallback = {
+    ...STANDARD_POOL,
+    address: 'fallback.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, fallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities keeps a custom fallback address when the previous primary had an identity', () => {
+  const previousPrimary = {
+    ...STANDARD_POOL,
+    user_identity: MAINNET_ADDRESS,
+  };
+  const nextPrimary = {
+    ...STANDARD_POOL,
+    user_identity: SECOND_MAINNET_ADDRESS,
+  };
+  const customFallback = {
+    ...STANDARD_POOL,
+    address: 'custom-fallback.example.com',
+    user_identity: THIRD_MAINNET_ADDRESS,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, customFallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, THIRD_MAINNET_ADDRESS);
+});

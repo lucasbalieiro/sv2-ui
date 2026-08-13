@@ -167,7 +167,11 @@ export function normalizePoolPriorityIdentities(
       miningMode,
     );
 
-    if (pool.user_identity && pool.user_identity !== previousDefaultIdentity) {
+    if (
+      previousDefaultIdentity &&
+      pool.user_identity &&
+      pool.user_identity !== previousDefaultIdentity
+    ) {
       return pool;
     }
 
