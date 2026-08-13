@@ -621,7 +621,10 @@ export function ConfigurationTab() {
                       <div>
                         <h3 className="text-sm font-semibold">Mining identity</h3>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          Set the primary {identityLabel.toLowerCase()}. Fallback pools inherit it by default.
+                          Set the primary {identityLabel.toLowerCase()}.{' '}
+                          {activeMiningMode === 'solo'
+                            ? 'Fallback pools inherit it by default.'
+                            : 'Each fallback pool needs its own username.'}
                         </p>
                       </div>
 

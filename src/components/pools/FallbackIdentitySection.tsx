@@ -37,26 +37,30 @@ export function FallbackIdentitySection({
   onChange,
   onFieldBlockingError,
 }: FallbackIdentitySectionProps) {
-  const customizedCount = fallbackPools.filter((pool) => (
-    pool.user_identity !== getCompatiblePoolIdentity(primaryPool, pool, miningMode)
-  )).length;
+  const inheritsIdentity = miningMode === 'solo';
+  const customizedCount = inheritsIdentity
+    ? fallbackPools.filter((pool) => (
+      pool.user_identity !== getCompatiblePoolIdentity(primaryPool, pool, miningMode)
+    )).length
+    : 0;
   const normalizedLabel = identityLabel.toLowerCase();
 
   if (!expanded) {
+    const summary = inheritsIdentity
+      ? (customizedCount === 0
+        ? `Fallback pools use the primary ${normalizedLabel}.`
+        : `${customizedCount} fallback ${customizedCount === 1 ? 'pool uses' : 'pools use'} a custom ${normalizedLabel}.`)
+      : `Fallback pools each need their own ${normalizedLabel}.`;
     return (
       <div className="rounded-lg border border-border bg-muted/20 p-4 text-sm text-muted-foreground">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <span>
-            {customizedCount === 0
-              ? `Fallback pools use the primary ${normalizedLabel}.`
-              : `${customizedCount} fallback ${customizedCount === 1 ? 'pool uses' : 'pools use'} a custom ${normalizedLabel}.`}
-          </span>
+          <span>{summary}</span>
           <button
             type="button"
             onClick={onToggle}
             className="self-start rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 sm:self-auto"
           >
-            {customizedCount === 0 ? 'Customize' : 'Review'}
+            {inheritsIdentity && customizedCount === 0 ? 'Customize' : 'Review'}
           </button>
         </div>
       </div>
@@ -75,7 +79,9 @@ export function FallbackIdentitySection({
           <p className={`mt-1 text-sm ${hasBlockingError ? 'text-destructive' : 'text-muted-foreground'}`}>
             {hasBlockingError
               ? `Set a valid fallback ${normalizedLabel} or remove the fallback pool.`
-              : `Optional. Fallbacks inherit the primary ${normalizedLabel} unless overridden here.`}
+              : inheritsIdentity
+                ? `Optional. Fallbacks inherit the primary ${normalizedLabel} unless overridden here.`
+                : `Each fallback pool needs its own ${normalizedLabel}.`}
           </p>
         </div>
         {!hasBlockingError && (
