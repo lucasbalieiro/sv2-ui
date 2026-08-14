@@ -80,7 +80,11 @@ export function PoolIdentityFields({
         id={`${idPrefix}-identity`}
         type="text"
         value={pool.user_identity}
-        onChange={(event) => onChange({ ...pool, user_identity: event.target.value })}
+        onChange={(event) => onChange({
+          ...pool,
+          user_identity: event.target.value,
+          user_identity_customized: true,
+        })}
         placeholder={placeholder}
         aria-required="true"
         autoComplete="off"
@@ -155,7 +159,11 @@ function SriPoolIdentityFields({
     setWorkerName(nextWorkerName);
     const user_identity = buildSriIdentity(address, nextWorkerName, donationPercent);
     lastPushedIdentity.current = user_identity;
-    onChangeRef.current({ ...pool, user_identity });
+    onChangeRef.current({
+      ...pool,
+      user_identity,
+      user_identity_customized: true,
+    });
   };
 
   return (

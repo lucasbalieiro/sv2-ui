@@ -131,6 +131,7 @@ export function withCompatiblePoolIdentity(
   return {
     ...targetPool,
     user_identity: getCompatiblePoolIdentity(sourcePool, targetPool, miningMode),
+    user_identity_customized: false,
   };
 }
 
@@ -144,6 +145,12 @@ export function withCompatiblePoolIdentity(
  * (a newly added fallback remains incomplete until the user supplies that
  * operator's username) and changing the primary username never rewrites
  * fallbacks.
+ *
+ * A fallback whose `user_identity_customized` flag is set is never rewritten,
+ * and one explicitly created through `withCompatiblePoolIdentity` always
+ * follows the primary. When the flag is absent (e.g. a config loaded from the
+ * server), the previous primary identity is used to decide whether the
+ * fallback inherited its value or overrode it.
  */
 export function normalizePoolPriorityIdentities(
   nextPools: PoolConfig[],
@@ -156,13 +163,28 @@ export function normalizePoolPriorityIdentities(
   return normalizedPools.map((pool, index) => {
     if (index === 0 || miningMode !== 'solo') return pool;
 
-    const previousDefaultIdentity = getCompatiblePoolIdentity(
-      previousPrimaryPool,
+    const nextDefaultIdentity = getCompatiblePoolIdentity(
+      nextPrimaryPool,
       pool,
       miningMode,
     );
-    const nextDefaultIdentity = getCompatiblePoolIdentity(
-      nextPrimaryPool,
+
+    if (pool.user_identity_customized === true) {
+      return pool;
+    }
+
+    if (pool.user_identity_customized === false) {
+      // A full-donation SRI identity intentionally contains no payout address.
+      // Keep an inherited fallback address instead of erasing information that
+      // cannot be represented in the primary pool's protocol identity.
+      if (!nextDefaultIdentity && pool.user_identity) {
+        return pool;
+      }
+      return { ...pool, user_identity: nextDefaultIdentity };
+    }
+
+    const previousDefaultIdentity = getCompatiblePoolIdentity(
+      previousPrimaryPool,
       pool,
       miningMode,
     );

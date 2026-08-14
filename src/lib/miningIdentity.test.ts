@@ -124,6 +124,7 @@ test('withCompatiblePoolIdentity inherits the payout address in solo mode', () =
   );
 
   assert.equal(fallback.user_identity, MAINNET_ADDRESS);
+  assert.equal(fallback.user_identity_customized, false);
 });
 
 test('normalizePoolPriorityIdentities updates inherited fallback payout addresses but preserves overrides in solo mode', () => {
@@ -395,4 +396,149 @@ test('normalizePoolPriorityIdentities keeps a custom fallback address when the p
   );
 
   assert.equal(result[1].user_identity, THIRD_MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities preserves a customized fallback address after the primary is corrected from empty', () => {
+  const previousPrimary = {
+    ...STANDARD_POOL,
+    user_identity: '',
+  };
+  const nextPrimary = {
+    ...STANDARD_POOL,
+    user_identity: MAINNET_ADDRESS,
+  };
+  const customFallback = {
+    ...STANDARD_POOL,
+    address: 'custom-fallback.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+    user_identity_customized: true,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, customFallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, SECOND_MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities preserves a customized fallback address after a full donation is replaced by a payout address', () => {
+  const previousPrimary = {
+    ...SRI_POOL,
+    user_identity: 'sri/donate',
+  };
+  const nextPrimary = {
+    ...SRI_POOL,
+    user_identity: `sri/donate/25/${MAINNET_ADDRESS}/worker1`,
+  };
+  const customFallback = {
+    ...STANDARD_POOL,
+    address: 'custom-fallback.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+    user_identity_customized: true,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, customFallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, SECOND_MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities re-syncs an inherited fallback after the primary payout address is corrected', () => {
+  const previousPrimary = {
+    ...STANDARD_POOL,
+    user_identity: '',
+  };
+  const nextPrimary = {
+    ...STANDARD_POOL,
+    user_identity: MAINNET_ADDRESS,
+  };
+  const inheritedFallback = {
+    ...STANDARD_POOL,
+    address: 'fallback.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+    user_identity_customized: false,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, inheritedFallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, MAINNET_ADDRESS);
+});
+
+test('normalizePoolPriorityIdentities keeps an inherited fallback address when the primary switches to full donation', () => {
+  const previousPrimary = {
+    ...SRI_POOL,
+    user_identity: `sri/donate/25/${MAINNET_ADDRESS}/worker1`,
+  };
+  const nextPrimary = {
+    ...SRI_POOL,
+    user_identity: 'sri/donate',
+  };
+  const inheritedFallback = {
+    ...STANDARD_POOL,
+    address: 'fallback.example.com',
+    user_identity: MAINNET_ADDRESS,
+    user_identity_customized: false,
+  };
+
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, inheritedFallback],
+    previousPrimary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, MAINNET_ADDRESS);
+});
+
+test('withCompatiblePoolIdentity then normalizePoolPriorityIdentities re-syncs an inherited solo fallback when the primary is corrected', () => {
+  const primary = {
+    ...STANDARD_POOL,
+    address: 'primary-pool.example.com',
+    user_identity: SECOND_MAINNET_ADDRESS,
+  };
+  const inheritedFallback = withCompatiblePoolIdentity(
+    primary,
+    { ...STANDARD_POOL, address: 'fallback.example.com' },
+    'solo',
+  );
+
+  const nextPrimary = { ...primary, user_identity: MAINNET_ADDRESS };
+  const result = normalizePoolPriorityIdentities(
+    [nextPrimary, inheritedFallback],
+    primary,
+    'solo',
+  );
+
+  assert.equal(result[1].user_identity, MAINNET_ADDRESS);
+  assert.equal(result[1].user_identity_customized, false);
+});
+
+test('withCompatiblePoolIdentity then normalizePoolPriorityIdentities keeps a pool-mode fallback username empty', () => {
+  const primary = {
+    ...STANDARD_POOL,
+    address: 'primary-pool.example.com',
+    user_identity: 'primary-account',
+  };
+  const newFallback = withCompatiblePoolIdentity(
+    primary,
+    { ...STANDARD_POOL, address: 'fallback.example.com' },
+    'pool',
+  );
+
+  const result = normalizePoolPriorityIdentities(
+    [primary, newFallback],
+    primary,
+    'pool',
+  );
+
+  assert.equal(result[1].user_identity, '');
+  assert.equal(result[1].user_identity_customized, false);
 });

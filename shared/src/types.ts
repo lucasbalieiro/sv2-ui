@@ -14,6 +14,8 @@ export interface PoolConfig {
   jds_port?: number;
   authority_public_key: string;
   user_identity: string;
+  /** UI-only marker: true when the user explicitly customized this pool's identity. Never emitted to the generated miner config. */
+  user_identity_customized?: boolean;
 }
 
 export interface BitcoinConfig {
