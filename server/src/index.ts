@@ -5,7 +5,6 @@
  */
 
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -43,6 +42,7 @@ import {
 } from './docker.js';
 import { getLogDiagnostics, getLogStreams, readCollatedLogLines } from './logs/diagnostics.js';
 import { ActivePoolTracker } from './active-pool.js';
+import { isSameOriginRequest } from './request-origin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -68,9 +68,21 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-// Middleware
-app.use(cors());
 app.use(express.json());
+
+// Reject cross-site state-changing requests before any handler runs.
+app.use((req, res, next) => {
+  const allowed = isSameOriginRequest({
+    method: req.method,
+    origin: req.get('origin'),
+    host: req.get('host'),
+    secFetchSite: req.get('sec-fetch-site'),
+  });
+  if (!allowed) {
+    return res.status(403).json({ error: 'Cross-origin request rejected' });
+  }
+  next();
+});
 
 // Serve static files from the built UI
 // In Docker (NODE_ENV=production): /app/public
