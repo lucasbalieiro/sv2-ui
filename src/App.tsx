@@ -6,23 +6,13 @@ import { UnifiedDashboard } from '@/pages/UnifiedDashboard';
 import { Settings } from '@/pages/Settings';
 import { Setup } from '@/pages/Setup';
 import { FAQ } from '@/pages/FAQ';
+import { LoginGate } from '@/components/auth/LoginGate';
+import { BrandSplash } from '@/components/auth/BrandSplash';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 
-/**
- * SV2 Mining Stack UI
- * 
- * A unified dashboard for monitoring the SV2 mining stack.
- * Automatically detects the deployment mode:
- * 
- * - Non-JD mode: Pool ← Translator ← SV1 Clients
- * - JD mode: Pool ← JDC ← Translator ← SV1 Clients
- * 
- * Pool data (shares, hashrate) always comes from the right source:
- * - JDC's upstream connection (if JD mode)
- * - Translator's upstream connection (if non-JD mode)
- * 
- * SV1 clients always come from Translator.
- */
+export { isRouteAuthorized } from '@/lib/routeAuth';
+export type { Principal } from '@/lib/routeAuth';
+
 function Router() {
   const [location, navigate] = useLocation();
   const { isLoading, isOrchestrated, needsSetup } = useSetupStatus();
@@ -34,19 +24,14 @@ function Router() {
     }
   }, [isLoading, isOrchestrated, needsSetup, location, navigate]);
 
-  // Brief loading state while checking setup status (max ~2s due to timeout)
-  // Don't block for too long - if backend is unavailable, just show the app
+  useEffect(() => {
+    if (!isLoading && isOrchestrated && !needsSetup && location === '/setup') {
+      navigate('/');
+    }
+  }, [isLoading, isOrchestrated, needsSetup, location, navigate]);
+
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center space-y-4">
-          <div className="h-8 w-8 mx-auto rounded-lg bg-primary animate-pulse flex items-center justify-center">
-            <span className="text-primary-foreground font-bold text-sm">SV2</span>
-          </div>
-          <p className="text-sm text-muted-foreground">Checking configuration...</p>
-        </div>
-      </div>
-    );
+    return <BrandSplash message="Checking configuration..." />;
   }
 
   return (
@@ -60,10 +45,6 @@ function Router() {
       <Route path="/settings">
         <Settings />
       </Route>
-      <Route path="/faq">
-        <FAQ />
-      </Route>
-      {/* Fallback to dashboard */}
       <Route>
         <UnifiedDashboard />
       </Route>
@@ -74,7 +55,17 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Router />
+      <Switch>
+        {/* Public, non-sensitive route rendered outside the auth gate. */}
+        <Route path="/faq">
+          <FAQ />
+        </Route>
+        <Route>
+          <LoginGate>
+            <Router />
+          </LoginGate>
+        </Route>
+      </Switch>
     </QueryClientProvider>
   );
 }

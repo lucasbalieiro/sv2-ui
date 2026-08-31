@@ -16,3 +16,9 @@ test('CORS middleware does not allow arbitrary cross-origin requests', () => {
       'to the unauthenticated management API.',
   );
 });
+
+test('every mutating control route sits behind the session middleware', () => {
+  const source = readFileSync(path.join(__dirname, 'index.ts'), 'utf8');
+  assert.match(source, /Authentication required/);
+  assert.match(source, /sessions\.isValid\(getSessionToken\(req\)\)/);
+});

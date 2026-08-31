@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
-import { Sun, Moon, Menu, X, LayoutDashboard, Settings, HelpCircle } from 'lucide-react';
+import { Sun, Moon, Menu, X, LayoutDashboard, Settings, HelpCircle, LogOut } from 'lucide-react';
 import { cn, formatUptime } from '@/lib/utils';
 import { getKnownPoolForConfig } from '@/lib/pools';
 import type { AppMode, AppFeatures } from '@/types/api';
 import { getAppFeatures } from '@/types/api';
 import { useUiConfig } from '@/hooks/useUiConfig';
+import { useAuth } from '@/hooks/useAuth';
 import { PoolIcon } from '@/components/ui/pool-icon';
 import { StatusDot } from '@/components/ui/status-dot';
 
@@ -71,6 +72,7 @@ export function Shell({
   const [location] = useLocation();
   const { isDark, toggle } = useTheme();
   const { config } = useUiConfig();
+  const { logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -134,6 +136,20 @@ export function Shell({
     >
       <Sun className="absolute h-[14px] w-[14px] transition-all duration-300 rotate-0 scale-100 dark:-rotate-90 dark:scale-0" />
       <Moon className="absolute h-[14px] w-[14px] transition-all duration-300 rotate-90 scale-0 dark:rotate-0 dark:scale-100" />
+    </button>
+  );
+
+  const LogoutBtn = ({ size = 7 }: { size?: number }) => (
+    <button
+      onClick={() => logout.mutate()}
+      aria-label="Log out"
+      title="Log out"
+      className={cn(
+        'relative flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground hover:bg-foreground/8 transition-all duration-150',
+        `w-${size} h-${size}`
+      )}
+    >
+      <LogOut className="h-[14px] w-[14px]" />
     </button>
   );
 
@@ -228,6 +244,7 @@ export function Shell({
                   <HelpCircle className="h-[14px] w-[14px]" />
                 </button>
               </Link>
+              <LogoutBtn />
               <ThemeBtn />
             </span>
 
@@ -286,6 +303,13 @@ export function Shell({
             >
               {isDark ? <Sun className="h-4 w-4 mr-2" /> : <Moon className="h-4 w-4 mr-2" />}
               {isDark ? 'Light mode' : 'Dark mode'}
+            </button>
+            <button
+              onClick={() => logout.mutate()}
+              className="flex items-center w-full px-3 py-2.5 rounded-lg text-[14px] font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-all duration-150"
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Log out
             </button>
           </nav>
         </div>

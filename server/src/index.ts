@@ -42,15 +42,37 @@ import {
 } from './docker.js';
 import { getLogDiagnostics, getLogStreams, readCollatedLogLines } from './logs/diagnostics.js';
 import { ActivePoolTracker } from './active-pool.js';
+import {
+  CredentialError,
+  generateRecoveryKey,
+  getPasswordValidationError,
+  hashPassword,
+  loadCredential,
+  saveCredential,
+  verifyPassword,
+  verifyRecoveryKey,
+} from './auth-store.js';
 import { isSameOriginRequest } from './request-origin.js';
+import {
+  SessionStore,
+  SESSION_COOKIE_NAME,
+  buildClearedSessionCookie,
+  buildSessionCookie,
+  parseCookies,
+} from './sessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+// WARNING: Umbrel's app_proxy (and any reverse proxy) terminates the client connection;
+// trust its forwarding headers so cookie Secure flags are decided correctly.
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 3001;
 
 // Config storage
 const CONFIG_DIR = process.env.CONFIG_DIR || path.join(__dirname, '../../data/config');
 const STATE_FILE = path.join(CONFIG_DIR, 'state.json');
+const CREDENTIAL_FILE = path.join(CONFIG_DIR, 'credential.json');
+const sessions = new SessionStore();
 
 const AUTO_START_RETRY_INTERVAL_MS = 30_000;
 const AUTO_START_MIN_BACKOFF_MS = 60_000;
@@ -70,6 +92,55 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 
 app.use(express.json());
 
+/**
+ * WARNING: Public API surface. Everything else under /api requires a session.
+ * These endpoints expose no configuration and no host details.
+ */
+const PUBLIC_API_PATHS = new Set([
+  '/api/health',
+  '/api/auth/state',
+  '/api/auth/login',
+  '/api/auth/setup-password',
+  '/api/auth/recover',
+]);
+
+
+const RECOVER_MAX_FAILURES = 5;
+const RECOVER_WINDOW_MS = 15 * 60 * 1000;
+const recoverFailures = new Map<string, { count: number; resetAt: number }>();
+
+function recoverClientIp(req: express.Request): string {
+  return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+}
+
+function isRecoverRateLimited(ip: string): boolean {
+  const entry = recoverFailures.get(ip);
+  if (!entry) return false;
+  if (Date.now() > entry.resetAt) {
+    recoverFailures.delete(ip);
+    return false;
+  }
+  return entry.count >= RECOVER_MAX_FAILURES;
+}
+
+function recordRecoverFailure(ip: string): void {
+  const now = Date.now();
+  const entry = recoverFailures.get(ip);
+  if (!entry || now > entry.resetAt) {
+    recoverFailures.set(ip, { count: 1, resetAt: now + RECOVER_WINDOW_MS });
+  } else {
+    entry.count += 1;
+  }
+}
+
+function isSecureRequest(req: express.Request): boolean {
+  return req.protocol === 'https' || req.get('x-forwarded-proto') === 'https';
+}
+
+function getSessionToken(req: express.Request): string | undefined {
+  return parseCookies(req.get('cookie'))[SESSION_COOKIE_NAME];
+}
+
 // Reject cross-site state-changing requests before any handler runs.
 app.use((req, res, next) => {
   const allowed = isSameOriginRequest({
@@ -82,6 +153,18 @@ app.use((req, res, next) => {
     return res.status(403).json({ error: 'Cross-origin request rejected' });
   }
   next();
+});
+
+app.use((req, res, next) => {
+  const isProtected =
+    (req.path.startsWith('/api/') && !PUBLIC_API_PATHS.has(req.path)) ||
+    req.path.startsWith('/translator-api') ||
+    req.path.startsWith('/jdc-api');
+
+  if (!isProtected) return next();
+  if (sessions.isValid(getSessionToken(req))) return next();
+
+  return res.status(401).json({ error: 'Authentication required' });
 });
 
 // Serve static files from the built UI
@@ -187,6 +270,181 @@ function recordAutoStartFailure(error: unknown): void {
 }
 
 /**
+ * GET /api/auth/state - Whether a password exists and whether this client is
+ * authenticated. Deliberately leaks nothing beyond those two booleans.
+ */
+app.get('/api/auth/state', async (req, res) => {
+  try {
+    const credential = await loadCredential(CREDENTIAL_FILE);
+    res.json({
+      passwordSet: credential !== null,
+      authenticated: sessions.isValid(getSessionToken(req)),
+      recoveryKeySet: credential?.recoveryKey !== undefined,
+    });
+  } catch (error) {
+    if (error instanceof CredentialError) {
+      return res.status(500).json({ error: 'Stored credential could not be read.' });
+    }
+    console.error('Auth state error:', error);
+    res.status(500).json({ error: 'Failed to read authentication state' });
+  }
+});
+
+/**
+ * POST /api/auth/setup-password - Create the admin password.
+ * Only permitted while no password exists; afterwards it always 409s so it
+ * cannot be used to take over a configured instance.
+ */
+app.post('/api/auth/setup-password', async (req, res) => {
+  try {
+    const existing = await loadCredential(CREDENTIAL_FILE);
+    if (existing) {
+      return res.status(409).json({ error: 'A password has already been set.' });
+    }
+
+    const password = isJsonObject(req.body) ? req.body.password : undefined;
+    const validationError = getPasswordValidationError(password);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+
+    await fs.mkdir(CONFIG_DIR, { recursive: true });
+    const recoveryKey = generateRecoveryKey();
+    await saveCredential(CREDENTIAL_FILE, {
+      ...(await hashPassword(password as string)),
+      recoveryKey: await hashPassword(recoveryKey),
+    });
+
+    const token = sessions.create();
+    res.setHeader('Set-Cookie', buildSessionCookie(token, isSecureRequest(req)));
+    // The recovery key is returned exactly once; the operator must save it.
+    res.json({ success: true, recoveryKey });
+  } catch (error) {
+    console.error('Password setup error:', error);
+    res.status(500).json({ error: 'Failed to set password' });
+  }
+});
+
+/**
+ * POST /api/auth/login - Exchange the password for a session cookie.
+ */
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const credential = await loadCredential(CREDENTIAL_FILE);
+    if (!credential) {
+      return res.status(409).json({ error: 'No password has been set yet.' });
+    }
+
+    const password = isJsonObject(req.body) ? req.body.password : undefined;
+    if (typeof password !== 'string' || !(await verifyPassword(password, credential))) {
+      return res.status(401).json({ error: 'Incorrect password.' });
+    }
+
+    const token = sessions.create();
+    res.setHeader('Set-Cookie', buildSessionCookie(token, isSecureRequest(req)));
+    res.json({ success: true });
+  } catch (error) {
+    if (error instanceof CredentialError) {
+      return res.status(500).json({ error: 'Stored credential could not be read.' });
+    }
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Failed to log in' });
+  }
+});
+
+/**
+ * POST /api/auth/logout - Invalidate the current session.
+ */
+app.post('/api/auth/logout', (req, res) => {
+  sessions.destroy(getSessionToken(req));
+  res.setHeader('Set-Cookie', buildClearedSessionCookie(isSecureRequest(req)));
+  res.json({ success: true });
+});
+
+/**
+ * POST /api/auth/recover - Reset a forgotten password using the recovery key.
+ *
+ * Unauthenticated by necessity (the operator is locked out), but still behind
+ * the same-origin guard and rate-limited. Deletes ONLY the credential file so
+ * the mining configuration is preserved; it does not wipe config/state.
+ */
+app.post('/api/auth/recover', async (req, res) => {
+  const ip = recoverClientIp(req);
+  if (isRecoverRateLimited(ip)) {
+    res.setHeader('Retry-After', String(Math.ceil(RECOVER_WINDOW_MS / 1000)));
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  }
+
+  try {
+    const recoveryKey = isJsonObject(req.body) ? req.body.recoveryKey : undefined;
+    if (typeof recoveryKey !== 'string' || recoveryKey.length === 0) {
+      return res.status(400).json({ error: 'A recovery key is required.' });
+    }
+
+    const credential = await loadCredential(CREDENTIAL_FILE);
+    if (!credential) {
+      return res.status(409).json({ error: 'No password has been set yet.' });
+    }
+
+    if (!(await verifyRecoveryKey(recoveryKey, credential))) {
+      recordRecoverFailure(ip);
+      return res.status(401).json({ error: 'Invalid recovery key.' });
+    }
+
+    // Reset password only: keep mining config (translator.toml, jdc.toml, state).
+    await fs.rm(CREDENTIAL_FILE, { force: true });
+    sessions.destroyAll();
+    recoverFailures.delete(ip);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Recovery error:', error);
+    res.status(500).json({ error: 'Failed to recover account' });
+  }
+});
+
+/**
+ * GET /api/auth/recovery-key - Whether a recovery key exists (authenticated).
+ */
+app.get('/api/auth/recovery-key', async (_req, res) => {
+  try {
+    const credential = await loadCredential(CREDENTIAL_FILE);
+    res.json({ exists: credential?.recoveryKey !== undefined });
+  } catch (error) {
+    if (error instanceof CredentialError) {
+      return res.status(500).json({ error: 'Stored credential could not be read.' });
+    }
+    console.error('Recovery key state error:', error);
+    res.status(500).json({ error: 'Failed to read recovery key state' });
+  }
+});
+
+/**
+ * POST /api/auth/recovery-key/regenerate - Issue a new recovery key
+ * (authenticated). The prior key is invalidated. The new key is returned once.
+ */
+app.post('/api/auth/recovery-key/regenerate', async (_req, res) => {
+  try {
+    const credential = await loadCredential(CREDENTIAL_FILE);
+    if (!credential) {
+      return res.status(409).json({ error: 'No password has been set yet.' });
+    }
+
+    const recoveryKey = generateRecoveryKey();
+    await saveCredential(CREDENTIAL_FILE, {
+      ...credential,
+      recoveryKey: await hashPassword(recoveryKey),
+    });
+    res.json({ recoveryKey });
+  } catch (error) {
+    if (error instanceof CredentialError) {
+      return res.status(500).json({ error: 'Stored credential could not be read.' });
+    }
+    console.error('Regenerate recovery key error:', error);
+    res.status(500).json({ error: 'Failed to regenerate recovery key' });
+  }
+});
+
+/**
  * GET /api/health - Health check
  */
 app.get('/api/health', async (_req, res) => {
@@ -218,9 +476,9 @@ app.get('/api/status', async (_req, res) => {
 
     const activePool = running && state.mode && pools.length > 0
       ? await activePoolTracker.getActivePool(
-          state.mode === 'jd' ? 'jdc' : 'translator',
-          pools
-        )
+        state.mode === 'jd' ? 'jdc' : 'translator',
+        pools
+      )
       : null;
 
     const response: StatusResponse = {
@@ -607,9 +865,13 @@ app.post('/api/reset', async (_req, res) => {
     // Reset is the explicit recovery action, including for unreadable setup.
     await Promise.all([
       fs.rm(STATE_FILE, { recursive: true, force: true }),
+      fs.rm(CREDENTIAL_FILE, { recursive: true, force: true }),
       fs.rm(path.join(CONFIG_DIR, 'translator.toml'), { recursive: true, force: true }),
       fs.rm(path.join(CONFIG_DIR, 'jdc.toml'), { recursive: true, force: true }),
     ]);
+
+    // The credential is gone, so every existing session is now unbacked.
+    sessions.destroyAll();
 
     res.json({ success: true });
   } catch (error) {

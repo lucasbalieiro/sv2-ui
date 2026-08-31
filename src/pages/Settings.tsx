@@ -9,11 +9,13 @@ import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 import { useContainerLogs } from '@/hooks/useContainerLogs';
 import { ContainerLogsPanel } from '@/components/data/ContainerLogsPanel';
+import { useAuth } from '@/hooks/useAuth';
 import {
   CheckCircle2,
   RotateCcw,
   Upload,
 } from 'lucide-react';
+import { CopyableValue } from '@/components/ui/copyable-value';
 import { ConfigurationTab } from '@/components/settings/ConfigurationTab';
 
 /**
@@ -24,6 +26,13 @@ export function Settings() {
   const { status: connectionStatus, statusLabel: connectionLabel, poolName, activePoolAddress, activePoolPort, activePoolAuthorityPublicKey, uptime } = useConnectionStatus();
   const { mode } = useSetupStatus();
   const isJdMode = mode === 'jd';
+  const { recoveryKeySet, regenerateRecoveryKey } = useAuth();
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+
+  const handleGenerateKey = async () => {
+    const key = await regenerateRecoveryKey.mutateAsync();
+    setRevealedKey(key);
+  };
   const [activeTab, setActiveTab] = useState('configuration');
   const { data: rawLogs, isLoading: logsLoading } = useContainerLogs(activeTab === 'logs');
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -88,10 +97,11 @@ export function Settings() {
         </div>
 
         <Tabs defaultValue="configuration" value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3 lg:w-[450px]">
+          <TabsList className="grid w-full grid-cols-4 lg:w-[600px]">
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
+            <TabsTrigger value="security">Security</TabsTrigger>
           </TabsList>
 
           <TabsContent value="configuration">
@@ -200,6 +210,70 @@ export function Settings() {
                     </span>
                   </div>
 
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="security">
+            <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+              <Card className="glass-card shadow-md">
+                <CardHeader>
+                  <CardTitle>Account recovery</CardTitle>
+                  <CardDescription>
+                    A recovery key lets you reset a forgotten password without
+                    losing your mining configuration. Store it somewhere safe.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {revealedKey ? (
+                    <div className="space-y-3">
+                      <CopyableValue value={revealedKey} />
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setRevealedKey(null)}
+                        >
+                          Done
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Anyone with this key can reset your password. The previous
+                        key (if any) is now invalid.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        {recoveryKeySet
+                          ? 'A recovery key is set. Generate a new one if you need a replacement.'
+                          : 'No recovery key is set yet.'}
+                      </p>
+                      <Button
+                        size="sm"
+                        onClick={handleGenerateKey}
+                        disabled={regenerateRecoveryKey.isPending}
+                      >
+                        {regenerateRecoveryKey.isPending
+                          ? 'Generating...'
+                          : recoveryKeySet
+                            ? 'Generate new recovery key'
+                            : 'Create recovery key'}
+                      </Button>
+                      {recoveryKeySet && (
+                        <p className="text-xs text-muted-foreground">
+                          Generating a new key invalidates the one you saved before.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {regenerateRecoveryKey.error && (
+                    <p className="text-xs text-destructive" role="alert">
+                      {regenerateRecoveryKey.error.message}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             </div>

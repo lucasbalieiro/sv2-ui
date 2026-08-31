@@ -24,6 +24,28 @@ Then open **http://localhost:8080**. On first run, you'll be guided through the 
 
 Stopping with **Ctrl+C** will also stop the Translator and JDC containers automatically.
 
+To fully remove sv2-ui, delete the container together with its config volume:
+
+```bash
+docker rm -f sv2-ui && docker volume rm sv2-config
+```
+
+## Authentication
+
+sv2-ui requires an admin password before it exposes any control over the mining
+stack. This protects your payout address and pool credentials from anyone who
+can reach the device's web interface.
+
+- On first launch, sv2-ui asks you to **create an admin password**. It also
+  generates a one-time **recovery key** — save it somewhere safe.
+- Sessions are kept in memory and last **12 hours**; they are cleared on server
+  restart, at which point you simply log in again.
+- **Forgot the password?** On the unlock screen, choose **Forgot password?** and
+  enter your recovery key. This resets the password **while keeping your mining
+  configuration**. You then choose a new
+  password and get a fresh recovery key. You can also (re)generate a recovery key
+  any time from **Settings > Security** when signed in.
+
 ### macOS (Docker Desktop)
 
 ```bash
