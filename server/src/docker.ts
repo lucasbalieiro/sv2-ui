@@ -8,6 +8,7 @@ import Docker from 'dockerode';
 import os from 'os';
 import type { BitcoinNetwork, HealthStatus } from '@sv2-ui/shared';
 import {
+  BITCOIN_PROBE_IMAGE,
   CONTAINER_NAMES,
   DOCKER_SOCKET_PATHS,
   DEFAULT_BITCOIN_PATHS,
@@ -284,7 +285,7 @@ export async function probeBitcoinSocketWithDocker(
   const containerSocketPath = "/tmp/bitcoin/node.sock";
 
   try {
-    await pullImage("node:20-bookworm-slim");
+    await pullImage(BITCOIN_PROBE_IMAGE);
 
     // Step 1: Check if socket file exists
     const existsResult = await checkSocketExists(socketPath, containerSocketPath);
@@ -314,7 +315,7 @@ export async function probeBitcoinRpcWithDocker(
   const rpcPort = RPC_PORTS[network];
 
   try {
-    await pullImage("node:20-bookworm-slim");
+    await pullImage(BITCOIN_PROBE_IMAGE);
 
     const errors: string[] = [];
 
@@ -375,7 +376,7 @@ async function runBitcoinRpcProbeContainer({
 
   try {
     container = await docker.createContainer({
-      Image: 'node:20-bookworm-slim',
+      Image: BITCOIN_PROBE_IMAGE,
       Entrypoint: ['node'],
       Cmd: ['-e', bitcoinRpcValidatorScript, containerDataDir, network, transport.host, String(rpcPort)],
       AttachStdout: true,
@@ -449,7 +450,7 @@ async function checkSocketExists(
   let container: Docker.Container | null = null;
   try {
     container = await docker.createContainer({
-      Image: 'node:20-bookworm-slim',
+      Image: BITCOIN_PROBE_IMAGE,
       Entrypoint: ['node'],
       Cmd: ['-e', bitcoinSocketExistsScript, containerSocketPath],
       AttachStdout: true,
@@ -492,7 +493,7 @@ async function validateSocketWithDocker(
 
   try {
     container = await docker.createContainer({
-      Image: 'node:20-bookworm-slim',
+      Image: BITCOIN_PROBE_IMAGE,
       Entrypoint: ['node'],
       Cmd: ['-e', bitcoinSocketValidatorScript, containerSocketPath, "1000", socketPath],
       AttachStdout: true,

@@ -43,6 +43,8 @@ export const MAX_DOWNSTREAM_EXTRANONCE2_SIZE = 65_535;
 export const DEFAULT_MIN_HASHRATE = 100_000_000_000_000;
 export const DEFAULT_POOL_PORT = 34254;
 
+export const BITCOIN_PROBE_IMAGE = 'node:24-bookworm-slim';
+
 export function computeDefaultSocketPath(dataDir: string, network: BitcoinNetwork): string {
   return network === 'mainnet' ? `${dataDir}/node.sock` : `${dataDir}/${network}/node.sock`;
 }
