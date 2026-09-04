@@ -118,15 +118,30 @@ function makeRpcCall(method, params) {
       },
     };
 
+    let settled = false;
+    let response = null;
+
+    function settle(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (response) response.destroy();
+      req.destroy();
+      reject(err);
+    }
+
+    const deadline = setTimeout(() => {
+      settle(new Error('Request timed out'));
+    }, 10000);
+
     const req = http.request(options, (res) => {
+      response = res;
       let data = '';
       let responseBytes = 0;
       res.on('data', (chunk) => {
         responseBytes += chunk.length;
         if (responseBytes > MAX_RPC_RESPONSE_BYTES) {
-          reject(new Error('RPC response exceeded maximum size'));
-          res.destroy();
-          req.destroy();
+          settle(new Error('RPC response exceeded maximum size'));
           return;
         }
         data += chunk;
@@ -135,18 +150,18 @@ function makeRpcCall(method, params) {
         try {
           const parsed = JSON.parse(data);
           if (parsed.error) {
-            reject(new Error(JSON.stringify(parsed.error)));
+            settle(new Error(JSON.stringify(parsed.error)));
           } else {
+            settle(null);
             resolve(parsed.result);
           }
         } catch (err) {
-          reject(new Error('Failed to parse RPC response'));
+          settle(new Error('Failed to parse RPC response'));
         }
       });
     });
 
-    req.on('error', (err) => { reject(err); });
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.on('error', (err) => { settle(err); });
     req.write(postData);
     req.end();
   });

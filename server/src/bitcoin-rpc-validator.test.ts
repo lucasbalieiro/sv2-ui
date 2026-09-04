@@ -65,3 +65,52 @@ test('rpc validator aborts an oversized response body', async () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('rpc validator enforces an absolute request deadline', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'rpc-validator-deadline-'));
+  writeFileSync(path.join(dataDir, '.cookie'), 'rpcuser:rpcpassword\n');
+
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write(' ');
+      const drip = setInterval(() => res.write(' '), 100);
+      res.on('close', () => clearInterval(drip));
+      res.on('error', () => clearInterval(drip));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+
+  try {
+    const error = await new Promise<Error & { killed?: boolean }>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [
+          '-e',
+          bitcoinRpcValidatorScript,
+          dataDir,
+          'mainnet',
+          '127.0.0.1',
+          String(address.port),
+        ],
+        { timeout: 12_000 },
+        (childError) => {
+          if (childError) resolve(childError);
+          else reject(new Error('validator unexpectedly accepted an incomplete response'));
+        },
+      );
+    });
+
+    assert.equal(
+      error.killed,
+      false,
+      'validator stayed alive until the test runner killed it instead of enforcing its own deadline',
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
