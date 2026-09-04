@@ -1,5 +1,6 @@
 export const bitcoinRpcValidatorScript = `const http = require('http');
 const fs = require('fs');
+const MAX_RPC_RESPONSE_BYTES = 1024 * 1024;
 
 const dataDir = process.argv[1];
 const network = process.argv[2] || 'mainnet';
@@ -119,7 +120,17 @@ function makeRpcCall(method, params) {
 
     const req = http.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      let responseBytes = 0;
+      res.on('data', (chunk) => {
+        responseBytes += chunk.length;
+        if (responseBytes > MAX_RPC_RESPONSE_BYTES) {
+          reject(new Error('RPC response exceeded maximum size'));
+          res.destroy();
+          req.destroy();
+          return;
+        }
+        data += chunk;
+      });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
@@ -129,7 +140,7 @@ function makeRpcCall(method, params) {
             resolve(parsed.result);
           }
         } catch (err) {
-          reject(new Error('Failed to parse response: ' + data));
+          reject(new Error('Failed to parse RPC response'));
         }
       });
     });
