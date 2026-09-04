@@ -789,7 +789,7 @@ async function startTranslator(configPath: string, image: string): Promise<void>
       Binds: binds,
       PortBindings: {
         '34255/tcp': [{ HostPort: '34255' }],
-        '9092/tcp': [{ HostPort: '9092' }],
+        '9092/tcp': [{ HostIp: '127.0.0.1', HostPort: '9092' }],
       },
       NetworkMode: NETWORK_NAME,
       RestartPolicy: { Name: 'no' },
@@ -841,7 +841,7 @@ async function startJdc(
       Binds: binds,
       PortBindings: {
         '34265/tcp': [{ HostPort: '34265' }],
-        '9091/tcp': [{ HostPort: '9091' }],
+        '9091/tcp': [{ HostIp: '127.0.0.1', HostPort: '9091' }],
       },
       NetworkMode: NETWORK_NAME,
       RestartPolicy: { Name: 'no' },

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import fs from 'node:fs';
 
@@ -72,4 +73,20 @@ test('normalizeDockerError formats EACCES to hint at permissions', () => {
 
   assert.match(result.message, /^Permission denied when accessing Docker/);
   assert.match(result.message, /Check file permissions or ensure your user is in the 'docker' group/);
+});
+
+test('monitoring APIs are published only on host loopback', async () => {
+  const source = await readFile(new URL('./docker.ts', import.meta.url), 'utf8');
+
+  for (const port of ['9091', '9092']) {
+    const loopbackBinding = new RegExp(
+      `'${port}/tcp':\\s*\\[\\{\\s*HostIp:\\s*'127\\.0\\.0\\.1',\\s*HostPort:\\s*'${port}'\\s*\\}\\]`,
+    );
+
+    assert.match(
+      source,
+      loopbackBinding,
+      `monitoring port ${port} must not be reachable from non-loopback interfaces`,
+    );
+  }
 });
