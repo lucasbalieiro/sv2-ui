@@ -77,7 +77,7 @@ export function Shell({
   const features = getAppFeatures(appMode);
   const navItems = getNavItems(features, appMode);
   const connectedPool = getKnownPoolForConfig(activePoolAddress && activePoolPort && activePoolAuthorityPublicKey ? { address: activePoolAddress, port: activePoolPort, authority_public_key: activePoolAuthorityPublicKey } : undefined);
-  const connectedStatusLabel = connectionLabel || `Connected to ${poolName || 'Pool'}`;
+  const connectedStatusLabel = connectionLabel || `Connected to ${connectedPool?.name || (poolName ? 'Custom Pool' : 'Pool')}`;
 
   // Close on route change
   useEffect(() => { setMenuOpen(false); }, [location]);
