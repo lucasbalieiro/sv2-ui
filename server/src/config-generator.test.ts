@@ -477,3 +477,43 @@ test('jdc config emits fallback upstreams after the primary pool', () => {
   assert.match(config, /pool_address = "pool\.example\.com"[\s\S]*user_identity = "miner\.worker1"/);
   assert.match(config, /pool_address = "fallback\.pool\.com"[\s\S]*user_identity = "miner\.fallback"/);
 });
+
+test('translator config serializes exponential min hashrates as valid TOML', () => {
+  const config = generateTranslatorConfig({
+    ...NO_JD_DATA,
+    translator: {
+      ...NO_JD_DATA.translator!,
+      min_hashrate: 1e21,
+    },
+  });
+
+  assert.match(config, /min_individual_miner_hashrate = 1e\+21$/m);
+  assert.doesNotMatch(
+    config,
+    /^min_individual_miner_hashrate = [^\n]*e[+-]\d+\.0$/m,
+  );
+});
+
+test('translator config serializes fractional min hashrates without appending .0', () => {
+  const config = generateTranslatorConfig({
+    ...NO_JD_DATA,
+    translator: {
+      ...NO_JD_DATA.translator!,
+      min_hashrate: 1.5,
+    },
+  });
+
+  assert.match(config, /min_individual_miner_hashrate = 1\.5$/m);
+});
+
+test('translator config serializes integer min hashrates with .0 suffix', () => {
+  const config = generateTranslatorConfig({
+    ...NO_JD_DATA,
+    translator: {
+      ...NO_JD_DATA.translator!,
+      min_hashrate: 100_000_000_000_000,
+    },
+  });
+
+  assert.match(config, /min_individual_miner_hashrate = 100000000000000\.0$/m);
+});

@@ -27,6 +27,11 @@ function positiveNumber(value: number | undefined, fallback: number): number {
     : fallback;
 }
 
+function tomlFloat(value: number): string {
+  const s = value.toString();
+  return Number.isInteger(value) && !/[eE]/.test(s) ? `${s}.0` : s;
+}
+
 function validDownstreamExtranonce2Size(value: number | undefined): value is number {
   return typeof value === 'number'
     && Number.isInteger(value)
@@ -204,7 +209,7 @@ verify_payout = ${verifyPayout}
     : '';
 
   // Min hashrate from user config (default 100 TH/s if not set)
-  const minHashrate = `${positiveNumber(translator.min_hashrate, DEFAULT_MIN_HASHRATE)}.0`;
+  const minHashrate = tomlFloat(positiveNumber(translator.min_hashrate, DEFAULT_MIN_HASHRATE));
   // Shares per minute target
   const sharesPerMinute = positiveNumber(translator.shares_per_minute, DEFAULT_SHARES_PER_MINUTE).toFixed(1);
   const normalizedDownstreamExtranonce2Size = downstreamExtranonce2Size(
