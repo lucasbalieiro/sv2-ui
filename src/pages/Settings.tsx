@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
-import { useUiConfig, hslToHex, isImageDataUrl, validateLogoFile } from '@/hooks/useUiConfig';
+import { useUiConfig, hslToHex, isImageDataUrl, validateLogoFile, MAX_LOGO_FILE_SIZE } from '@/hooks/useUiConfig';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 import { useContainerLogs } from '@/hooks/useContainerLogs';
@@ -154,7 +154,7 @@ export function Settings() {
                       </Button>
                     </div>
                       <p className="text-xs text-muted-foreground">
-                        SVG, PNG, or JPG. Displayed in the sidebar header.
+                        SVG, PNG, or JPG. Max {Math.round(MAX_LOGO_FILE_SIZE / 1024 / 1024)} MiB. Displayed in the sidebar header.
                       </p>
                       {logoError && (
                         <p className="text-xs text-destructive" role="alert">

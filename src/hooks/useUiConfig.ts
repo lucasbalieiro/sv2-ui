@@ -45,14 +45,23 @@ export function isImageDataUrl(value: unknown): value is string {
 
 export type LogoValidationResult = { ok: true } | { ok: false; error: string };
 
-// Validates an uploaded logo file at selection time. Rejects empty or
-// non-image files, and (where supported) tries to actually decode the image so
-// renamed or corrupt files are caught before they are stored as a broken logo.
+export const MAX_LOGO_FILE_SIZE = 1 * 1024 * 1024; // 1 MiB
+
+// Validates an uploaded logo file at selection time. Rejects empty,
+// oversized, or non-image files, and (where supported) tries to actually
+// decode the image so renamed or corrupt files are caught before they are
+// stored as a broken logo.
 export async function validateLogoFile(
   file: File | null | undefined,
 ): Promise<LogoValidationResult> {
   if (!file) return { ok: false, error: 'No file selected.' };
   if (!(file.size > 0)) return { ok: false, error: 'The selected file is empty.' };
+  if (file.size > MAX_LOGO_FILE_SIZE) {
+    return {
+      ok: false,
+      error: `Logo file is too large. Maximum size is ${Math.round(MAX_LOGO_FILE_SIZE / 1024 / 1024)} MiB.`,
+    };
+  }
   if (typeof file.type !== 'string' || !file.type.startsWith('image/')) {
     return { ok: false, error: 'Please choose an image file (PNG, JPG, SVG, or GIF).' };
   }
@@ -77,6 +86,16 @@ const PRIMARY_FOREGROUND_LIGHTNESS_THRESHOLD = 60;
 const LIGHT_PRIMARY_FOREGROUND = '0 0% 100%';
 const DARK_PRIMARY_FOREGROUND = '0 0% 9%';
 
+// Estimates the raw byte size of the binary payload in a base64 data URL.
+// The prefix `data:image/...;base64,` is metadata only; the useful bytes are
+// the base64-encoded part which decodes to roughly 3/4 of its length.
+function encodedDataUrlSize(dataUrl: string): number {
+  const commaIndex = dataUrl.indexOf(',');
+  if (commaIndex === -1) return dataUrl.length;
+  const payload = dataUrl.slice(commaIndex + 1);
+  return Math.floor((payload.length * 3) / 4);
+}
+
 function loadConfig(): UiConfig {
   if (typeof window === 'undefined') return DEFAULT_CONFIG;
   try {
@@ -90,9 +109,11 @@ function loadConfig(): UiConfig {
 
     return {
       primaryColor,
-      customLogoDataUrl: isImageDataUrl(parsed.customLogoDataUrl)
-        ? parsed.customLogoDataUrl
-        : DEFAULT_CONFIG.customLogoDataUrl,
+      customLogoDataUrl:
+        isImageDataUrl(parsed.customLogoDataUrl) &&
+        encodedDataUrlSize(parsed.customLogoDataUrl) <= MAX_LOGO_FILE_SIZE
+          ? parsed.customLogoDataUrl
+          : DEFAULT_CONFIG.customLogoDataUrl,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -101,7 +122,11 @@ function loadConfig(): UiConfig {
 
 function saveConfig(config: UiConfig) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Quota exceeded or storage unavailable — silently degrade.
+  }
 }
 
 function getPrimaryForeground(lightness: number): string {

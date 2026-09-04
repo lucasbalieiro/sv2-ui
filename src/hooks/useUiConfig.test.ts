@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hslToHex, isImageDataUrl, parseHslTriplet, validateLogoFile } from './useUiConfig.js';
+import { hslToHex, isImageDataUrl, parseHslTriplet, validateLogoFile, MAX_LOGO_FILE_SIZE } from './useUiConfig.js';
 
 test('parseHslTriplet accepts the canonical single-space form', () => {
   assert.deepEqual(parseHslTriplet('190 100% 45%'), { h: 190, s: 100, l: 45 });
@@ -87,4 +87,65 @@ test('validateLogoFile accepts a real image type', async () => {
     await validateLogoFile({ size: 10, type: 'image/png' } as unknown as File),
     { ok: true },
   );
+});
+
+test('validateLogoFile rejects oversized images before decoding or persistence', async () => {
+  const oversized = {
+    size: 64 * 1024 * 1024,
+    type: 'image/png',
+  } as unknown as File;
+
+  const result = await validateLogoFile(oversized);
+
+  assert.equal(
+    result.ok,
+    false,
+    'logo files need an upper size bound before createImageBitmap, FileReader, and localStorage',
+  );
+});
+
+test('validateLogoFile rejects files above MAX_LOGO_FILE_SIZE', async () => {
+  const justOver = {
+    size: MAX_LOGO_FILE_SIZE + 1,
+    type: 'image/png',
+  } as unknown as File;
+
+  const result = await validateLogoFile(justOver);
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /too large/i);
+  }
+});
+
+test('validateLogoFile accepts files at exactly MAX_LOGO_FILE_SIZE', async () => {
+  const exact = {
+    size: MAX_LOGO_FILE_SIZE,
+    type: 'image/png',
+  } as unknown as File;
+
+  const result = await validateLogoFile(exact);
+
+  assert.equal(result.ok, true);
+});
+
+test('validateLogoFile checks size before createImageBitmap', async () => {
+  const calls: string[] = [];
+  const origCreateImageBitmap = globalThis.createImageBitmap;
+  (globalThis as Record<string, unknown>).createImageBitmap = async () => {
+    calls.push('createImageBitmap');
+    return { close: () => {} };
+  };
+
+  try {
+    const oversized = {
+      size: 64 * 1024 * 1024,
+      type: 'image/png',
+    } as unknown as File;
+
+    await validateLogoFile(oversized);
+    assert.deepEqual(calls, [], 'createImageBitmap must not be called for oversized files');
+  } finally {
+    (globalThis as Record<string, unknown>).createImageBitmap = origCreateImageBitmap;
+  }
 });
