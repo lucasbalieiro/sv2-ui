@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -104,5 +104,34 @@ test('rejects inconsistent saved-state flags without overwriting the saved data'
     assert.match(await readFile(stateFile, 'utf8'), /"configured":false/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('does not follow a state-file symlink outside the config directory', async () => {
+  const configDir = await mkdtemp(path.join(os.tmpdir(), 'sv2-ui-state-'));
+  const privateDir = await mkdtemp(path.join(os.tmpdir(), 'sv2-ui-private-'));
+  const stateFile = path.join(configDir, 'state.json');
+  const privateFile = path.join(privateDir, 'private.json');
+
+  try {
+    await writeFile(privateFile, JSON.stringify({
+      configured: true,
+      data: {
+        ...SETUP_DATA,
+        pool: {
+          ...SETUP_DATA.pool,
+          name: 'private-data-readable-only-by-the-server',
+        },
+      },
+    }));
+    await symlink(privateFile, stateFile);
+
+    await assert.rejects(
+      loadSavedState(stateFile),
+      SavedStateError,
+    );
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+    await rm(privateDir, { recursive: true, force: true });
   }
 });

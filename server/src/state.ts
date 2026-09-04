@@ -45,12 +45,12 @@ export function getDefaultState(): SavedState {
 function normalizePersistedSetupData(data: SetupData): SetupData {
   const normalizedBitcoinData = data.bitcoin
     ? {
-        ...data,
-        bitcoin: {
-          ...data.bitcoin,
-          core_version: normalizeBitcoinCoreVersion(data.bitcoin.core_version),
-        },
-      }
+      ...data,
+      bitcoin: {
+        ...data.bitcoin,
+        core_version: normalizeBitcoinCoreVersion(data.bitcoin.core_version),
+      },
+    }
     : data;
 
   return normalizeSetupData(normalizedBitcoinData);
@@ -106,7 +106,15 @@ export function normalizeSavedState(rawState: unknown): SavedState {
 export async function loadSavedState(stateFile: string): Promise<SavedState> {
   let content: string;
   try {
-    content = await fs.readFile(stateFile, 'utf8');
+    const handle = await fs.open(
+      stateFile,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    try {
+      content = await handle.readFile('utf8');
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     // Only a missing file is a fresh install. Unreadable/corrupt state is
     // preserved and surfaced to the UI so setup cannot overwrite it.
