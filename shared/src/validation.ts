@@ -113,7 +113,12 @@ export function isValidPoolAuthorityPubkey(v: string): boolean {
   if (stripWrappingQuotes(v) !== v) return false;
   try {
     const decoded = bs58check.decode(v);
-    return decoded.length === 34;
+    return (
+      decoded.length === 34 &&
+      decoded[0] === 0x01 &&
+      decoded[1] === 0x00 &&
+      ecc.isXOnlyPoint(decoded.slice(2))
+    );
   } catch {
     return false;
   }

@@ -245,3 +245,11 @@ test('isValidPoolAuthorityPubkey: rejects a checksum-valid base58check blob of w
   const tooLong = bs58check.encode(Buffer.alloc(120, 0x42));
   assert.equal(isValidPoolAuthorityPubkey(tooLong), false);
 });
+
+test('isValidPoolAuthorityPubkey: rejects an off-curve x-only public key', () => {
+  const invalidPoint = bs58check.encode(Buffer.concat([
+    Buffer.from([0x01, 0x00]),
+    Buffer.alloc(32),
+  ]));
+  assert.equal(isValidPoolAuthorityPubkey(invalidPoint), false);
+});
