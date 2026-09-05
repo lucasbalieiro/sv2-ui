@@ -11,7 +11,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: 'http://localhost:5173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -24,7 +24,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev',
-    url: 'http://127.0.0.1:5173',
+    url: 'http://localhost:5173',
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     env: {
