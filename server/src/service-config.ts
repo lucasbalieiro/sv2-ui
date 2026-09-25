@@ -19,6 +19,7 @@ import {
   isValidBitcoinNetwork,
 } from '@sv2-ui/shared';
 import { generateJdcConfig, generateTranslatorConfig, normalizeSetupData } from './config-generator.js';
+import { ensureConfigDir } from './config-dir.js';
 import { writeFileAtomically } from './atomic-write.js';
 import { BITCOIN_ERROR_MESSAGES } from './messages.js';
 import { getPoolConfigError, MAX_FALLBACK_POOLS } from './pool-validation.js';
@@ -178,14 +179,44 @@ export function prepareServiceConfig(
   }
 }
 
-async function readExistingFile(filePath: string): Promise<string | null> {
+type ManagedPathKind = 'absent' | 'regular-file' | 'foreign';
+
+/**
+ * Inspect a managed path without following links. Drift and reconciliation
+ * decide based on the directory entry itself: a symlink, FIFO, socket or
+ * directory planted at a managed filename is foreign and must never be read
+ * through or written through.
+ */
+async function inspectManagedPath(filePath: string): Promise<ManagedPathKind> {
   try {
-    const stat = await fs.stat(filePath);
-    if (stat.isDirectory()) return null;
-    return await fs.readFile(filePath, 'utf8');
+    const stat = await fs.lstat(filePath);
+    return stat.isFile() ? 'regular-file' : 'foreign';
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
     throw error;
+  }
+}
+
+async function readExistingFile(filePath: string): Promise<string | null> {
+  let handle: fs.FileHandle | null = null;
+  try {
+    // O_NOFOLLOW refuses a symlinked entry and O_NONBLOCK keeps a
+    // concurrently planted FIFO from wedging the open. ENOENT, ENXIO (opening
+    // a Unix socket) and ELOOP (an entry swapped to a link after the lstat)
+    // all read as "nothing usable at this path".
+    handle = await fs.open(
+      filePath,
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW,
+    );
+    const stat = await handle.stat();
+    if (!stat.isFile()) return null;
+    return await handle.readFile('utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENXIO' || code === 'ELOOP') return null;
+    throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -196,17 +227,6 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
-  }
-}
-
-async function makeFileTargetWritable(filePath: string): Promise<void> {
-  try {
-    const stat = await fs.stat(filePath);
-    if (stat.isDirectory()) {
-      await fs.rm(filePath, { recursive: true, force: true });
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
@@ -231,7 +251,11 @@ export async function getServiceConfigDrift(
       continue;
     }
 
-    if (await readExistingFile(filePath) !== desiredContents) {
+    // Anything other than a regular file is drift, even when a symlink
+    // happens to resolve to matching contents.
+    const kind = await inspectManagedPath(filePath);
+    const existing = kind === 'regular-file' ? await readExistingFile(filePath) : null;
+    if (existing !== desiredContents) {
       drift.push(filename);
     }
   }
@@ -248,7 +272,7 @@ export async function reconcileServiceConfigFiles(
   files: ServiceConfigFile[],
   configDir: string,
 ): Promise<string[]> {
-  await fs.mkdir(configDir, { recursive: true });
+  await ensureConfigDir(configDir);
 
   const desiredByName = new Map(files.map((file) => [file.filename, file.contents]));
   const changedFiles: string[] = [];
@@ -265,10 +289,15 @@ export async function reconcileServiceConfigFiles(
       continue;
     }
 
+    // A symlink, FIFO or socket planted at a managed filename is replaced by
+    // the generated regular file, never written through.
+    if (await inspectManagedPath(filePath) === 'foreign') {
+      await fs.rm(filePath, { recursive: true, force: true });
+    }
+
     if (await readExistingFile(filePath) === desiredContents) continue;
 
-    await makeFileTargetWritable(filePath);
-    await writeFileAtomically(filePath, desiredContents);
+    await writeFileAtomically(filePath, desiredContents, { mode: 0o600 });
     changedFiles.push(filename);
   }
 
