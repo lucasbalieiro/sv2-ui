@@ -10,6 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeBitcoinCoreVersion } from '@sv2-ui/shared';
 import { normalizeSetupData } from './config-generator.js';
+import { ensureConfigDir } from './config-dir.js';
 import { writeFileAtomically } from './atomic-write.js';
 import type { SetupData } from './types.js';
 
@@ -145,12 +146,12 @@ export async function saveSavedState(
   shouldBeRunning = true,
 ): Promise<void> {
   const normalizedData = normalizePersistedSetupData(data);
-  await fs.mkdir(path.dirname(stateFile), { recursive: true });
+  await ensureConfigDir(path.dirname(stateFile));
   await writeFileAtomically(stateFile, JSON.stringify({
     configured: true,
     miningMode: normalizedData.miningMode,
     mode: normalizedData.mode,
     data: normalizedData,
     shouldBeRunning,
-  }, null, 2));
+  }, null, 2), { mode: 0o600 });
 }
