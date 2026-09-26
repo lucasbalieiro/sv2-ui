@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { constants, lstat, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, constants, lstat, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,6 +78,28 @@ test('does not rewrite generated config files that already match', async () => {
       await getServiceConfigDrift(prepared.files, configDir),
       [],
     );
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('migrates an existing matching managed file to the 0o600 mode', async () => {
+  const configDir = await mkdtemp(path.join(os.tmpdir(), 'sv2-ui-config-'));
+  const managedPath = path.join(configDir, 'translator.toml');
+
+  try {
+    await reconcileServiceConfigs(JD_DATA, configDir);
+    // Simulate a file written before the owner-only policy existed.
+    await chmod(managedPath, 0o644);
+
+    assert.deepEqual(await reconcileServiceConfigs(JD_DATA, configDir), ['translator.toml']);
+    assert.equal((await stat(managedPath)).mode & 0o777, 0o600);
+
+    // Contents are untouched, so the mode is not drift.
+    const prepared = prepareServiceConfig(JD_DATA);
+    assert.equal(prepared.kind, 'ready');
+    if (prepared.kind !== 'ready') assert.fail('Expected a ready configuration');
+    assert.deepEqual(await getServiceConfigDrift(prepared.files, configDir), []);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }

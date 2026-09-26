@@ -181,6 +181,8 @@ export function prepareServiceConfig(
 
 type ManagedPathKind = 'absent' | 'regular-file' | 'foreign';
 
+type ExistingFile = { contents: string; mode: number };
+
 /**
  * Inspect a managed path without following links. Drift and reconciliation
  * decide based on the directory entry itself: a symlink, FIFO, socket or
@@ -197,7 +199,7 @@ async function inspectManagedPath(filePath: string): Promise<ManagedPathKind> {
   }
 }
 
-async function readExistingFile(filePath: string): Promise<string | null> {
+async function readExistingFile(filePath: string): Promise<ExistingFile | null> {
   let handle: fs.FileHandle | null = null;
   try {
     // O_NOFOLLOW refuses a symlinked entry and O_NONBLOCK keeps a
@@ -210,7 +212,9 @@ async function readExistingFile(filePath: string): Promise<string | null> {
     );
     const stat = await handle.stat();
     if (!stat.isFile()) return null;
-    return await handle.readFile('utf8');
+    // The mode travels along so reconcile can migrate files written before
+    // the owner-only policy without rewriting their contents.
+    return { contents: await handle.readFile('utf8'), mode: stat.mode & 0o777 };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENXIO' || code === 'ELOOP') return null;
@@ -227,6 +231,33 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
+  }
+}
+
+/**
+ * Bring a managed regular file to the requested mode through a no-follow
+ * descriptor, without rewriting its contents. Best-effort on races (the entry
+ * may vanish or swap while re-opening) and on unprivileged EPERM: a file we
+ * cannot chmod must not fail the whole reconcile.
+ */
+async function tightenFileMode(filePath: string, mode: number): Promise<void> {
+  let handle: fs.FileHandle | null = null;
+  try {
+    handle = await fs.open(
+      filePath,
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW,
+    );
+    await handle.chmod(mode);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENXIO' || code === 'ELOOP') return;
+    if (code === 'EPERM' || code === 'EACCES') {
+      console.warn(`Could not restrict permissions of ${filePath}: ${code}`);
+      return;
+    }
+    throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -255,7 +286,7 @@ export async function getServiceConfigDrift(
     // happens to resolve to matching contents.
     const kind = await inspectManagedPath(filePath);
     const existing = kind === 'regular-file' ? await readExistingFile(filePath) : null;
-    if (existing !== desiredContents) {
+    if (existing?.contents !== desiredContents) {
       drift.push(filename);
     }
   }
@@ -295,7 +326,16 @@ export async function reconcileServiceConfigFiles(
       await fs.rm(filePath, { recursive: true, force: true });
     }
 
-    if (await readExistingFile(filePath) === desiredContents) continue;
+    const existing = await readExistingFile(filePath);
+    if (existing && existing.contents === desiredContents) {
+      // Contents match, but files written before the owner-only policy may
+      // still carry a permissive mode: tighten it in place.
+      if (existing.mode !== 0o600) {
+        await tightenFileMode(filePath, 0o600);
+        changedFiles.push(filename);
+      }
+      continue;
+    }
 
     await writeFileAtomically(filePath, desiredContents, { mode: 0o600 });
     changedFiles.push(filename);
