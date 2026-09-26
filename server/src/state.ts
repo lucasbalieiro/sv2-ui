@@ -107,9 +107,11 @@ export function normalizeSavedState(rawState: unknown): SavedState {
 export async function loadSavedState(stateFile: string): Promise<SavedState> {
   let content: string;
   try {
+    // O_NOFOLLOW refuses a symlinked state file; O_NONBLOCK keeps a planted
+    // FIFO from wedging a threadpool worker.
     const handle = await fs.open(
       stateFile,
-      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW,
     );
     try {
       content = await handle.readFile('utf8');
