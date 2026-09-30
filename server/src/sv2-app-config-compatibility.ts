@@ -20,6 +20,11 @@ import type { SetupData } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const CONFIG_ACCEPTANCE_WINDOW_MS = 2_500;
+// Head and tail of the container output retained for diagnostics (about
+// 1 MiB combined). The middle of longer streams is drained and discarded so
+// a noisy container cannot grow this process' heap without bound.
+const MAX_RETAINED_OUTPUT_LENGTH = 512 * 1024;
+const OUTPUT_TRUNCATION_NOTICE = '\n[sv2-ui compatibility check dropped the middle of this output]\n';
 const TEST_POOL_PORT = 34254;
 const MALFORMED_CONFIG = 'invalid = [\n';
 
@@ -53,6 +58,46 @@ function hasConfigError(output: string): boolean {
 
 function hasDockerError(output: string): boolean {
   return DOCKER_ERROR_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+type BoundedOutputCapture = {
+  append: (chunk: Buffer) => void;
+  text: () => string;
+};
+
+/**
+ * Collect a child process' output while keeping only its first and last
+ * MAX_RETAINED_OUTPUT_LENGTH characters. Config errors are expected near the
+ * start of the stream (parse failure) or near its end (late error before
+ * shutdown), so dropping the middle keeps the diagnostics usable while
+ * bounding memory even when a container streams output without stopping.
+ */
+function createBoundedOutputCapture(): BoundedOutputCapture {
+  let head = '';
+  let tail = '';
+  let droppedCharacters = 0;
+
+  return {
+    append: (chunk: Buffer): void => {
+      tail += chunk.toString();
+      if (tail.length <= MAX_RETAINED_OUTPUT_LENGTH) {
+        return;
+      }
+
+      const overflow = tail.length - MAX_RETAINED_OUTPUT_LENGTH;
+      const retained = Math.min(overflow, MAX_RETAINED_OUTPUT_LENGTH - head.length);
+      head += tail.slice(0, retained);
+      droppedCharacters += overflow - retained;
+      tail = tail.slice(overflow);
+    },
+    text: (): string => {
+      if (droppedCharacters === 0) {
+        return head + tail;
+      }
+
+      return head + OUTPUT_TRUNCATION_NOTICE + tail;
+    },
+  };
 }
 
 async function checkGeneratedConfig(
@@ -138,9 +183,9 @@ async function runConfigCommand(
     '-c', servicePath,
   ];
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-  child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  const output = createBoundedOutputCapture();
+  child.stdout.on('data', (chunk: Buffer) => { output.append(chunk); });
+  child.stderr.on('data', (chunk: Buffer) => { output.append(chunk); });
 
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once('error', reject);
@@ -154,10 +199,10 @@ async function runConfigCommand(
     ]);
 
     if (!result) {
-      return { kind: 'still-running', output };
+      return { kind: 'still-running', output: output.text() };
     }
 
-    return { kind: 'exited', code: result.code, signal: result.signal, output };
+    return { kind: 'exited', code: result.code, signal: result.signal, output: output.text() };
   } finally {
     if (!child.killed) {
       await execFileAsync('docker', ['kill', name]).catch(() => undefined);
