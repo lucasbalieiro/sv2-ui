@@ -755,7 +755,7 @@ app.get('/api/logs/diagnostics', async (_req, res) => {
 app.get('/api/logs/raw', async (req, res) => {
   try {
     const state = await loadState();
-const tailParam = parseInt(req.query.tail as string, 10);
+    const tailParam = parseInt(req.query.tail as string, 10);
     const tail = Number.isFinite(tailParam) ? Math.min(Math.max(tailParam, 1), 500) : 200;
     // Pass the tail as a value, never wrapped in a fresh closure: snapshot
     // coalescing keys on (provider, mode, tail), so a per-request wrapper

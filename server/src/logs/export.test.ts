@@ -159,6 +159,62 @@ test('accepts a large but plausible frame payload', () => {
   assert.equal(chunks[0].payload.length, payload.length);
 });
 
+test('neutralizes terminal control sequences in downloaded log lines', () => {
+  const { lines, formatter } = collectLines();
+  // OSC-52 clipboard overwrite + BEL, followed by an ANSI clear-screen.
+  formatter.consume({
+    stream: 'stderr',
+    payload: '\u001b]52;c;Y3VybCBodHRwczovL2F0dGFja2VyLmludmFsaWQ=\u0007safe message\u001b[2J\n',
+  });
+  formatter.flush();
+
+  // Byte-level stripping leaves each sequence's printable parameters as
+  // inert text; the message survives and no control byte a terminal could
+  // act on reaches the file.
+  assert.match(lines.join('\n'), /safe message/);
+  assert.doesNotMatch(
+    lines.join('\n'),
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u,
+    'a downloaded text log must not retain raw terminal control bytes',
+  );
+});
+
+test('keeps tabs but strips mid-line carriage returns from downloaded log lines', () => {
+  const { lines, formatter } = collectLines();
+  formatter.consume({ stream: 'stdout', payload: 'attempt\rretry\taligned\n' });
+
+  assert.deepEqual(lines, ['[translator] [stdout] attemptretry\taligned']);
+});
+
+test('keeps the timestamp on lines whose message contains a line terminator', () => {
+  const { lines, formatter } = collectLines();
+  // Without the `s` flag the whole match fails on a carriage return and the
+  // line exports untagged, with the timestamp glued to the message. U+2028 is
+  // outside the C0/C1 range the terminal sanitizer strips, so it survives as
+  // ordinary text — what matters here is that the timestamp is still split out.
+  formatter.consume({ stream: 'stdout', payload: '2026-01-01T00:00:00Z attempt\rretry\n' });
+  formatter.consume({ stream: 'stderr', payload: '2026-01-01T00:00:00Z sep\u2028arator\n' });
+
+  assert.deepEqual(lines, [
+    '2026-01-01T00:00:00Z [translator] [stdout] attemptretry',
+    '2026-01-01T00:00:00Z [translator] [stderr] sep\u2028arator',
+  ]);
+});
+
+test('strips controls a container fakes inside a timestamp-shaped prefix', () => {
+  const { lines, formatter } = collectLines();
+  // A BEL inside the timestamp capture and an ESC in the message: both must
+  // go, even though only the message would be sanitized if the line were
+  // cleaned field by field.
+  formatter.consume({
+    stream: 'stdout',
+    payload: '2026-09-30T12:00:00\u0007.000Z forged\u001b[2K\n',
+  });
+
+  assert.deepEqual(lines, ['2026-09-30T12:00:00.000Z [translator] [stdout] forged[2K']);
+});
+
 test('keeps the export byte cap generous relative to rotated history', () => {
   assert.equal(CONTAINER_LOG_EXPORT_MAX_BYTES, 64 * 1024 * 1024);
 });

@@ -67,7 +67,22 @@ export type ContainerLogLineSink = {
 // is enabled, so we split it from the log message. The formatted line keeps
 // the exact shape the previous client-side download builder produced:
 // `timestamp [container] [stream] message`.
-const DOCKER_LOG_TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T\S+?)\s(.*)$/;
+//
+// The `s` flag matters: `.` excludes line terminators, so a message holding a
+// carriage return (or U+2028/U+2029) would fail the match entirely and export
+// as an untagged line with the timestamp glued into the message text.
+const DOCKER_LOG_TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T\S+?)\s(.*)$/s;
+
+// Container log text is controlled by the mining workload and is written
+// verbatim into the exported file, which an operator may display in a
+// terminal: OSC-52 can overwrite the clipboard, CSI/C1 sequences can clear
+// or repaint the screen, and a mid-line carriage return can rewrite the
+// start of the line. Strip terminal-executable control characters while
+// keeping printable text: an escape sequence's printable parameters remain
+// as inert text (no introducer byte, nothing to act on), and tab survives
+// to preserve column alignment.
+// eslint-disable-next-line no-control-regex
+const TERMINAL_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
 
 // Renders a structured line as the text that reaches the file. Shared by the
 // per-container byte budget and the merged writer so the cap counts exactly
@@ -82,7 +97,9 @@ export function formatMergedLogLine(line: MergedLogLine): string {
     parts.push(line.timestamp);
   }
   parts.push(`[${line.container}]`, `[${line.stream}]`, line.message);
-  return parts.join(' ');
+  // Sanitize the joined line, not just the message: the loose timestamp
+  // capture would otherwise let a container-crafted prefix carry controls.
+  return parts.join(' ').replace(TERMINAL_CONTROL_CHARS_RE, '');
 }
 
 // What the download route provides: the response's own backpressure signal
