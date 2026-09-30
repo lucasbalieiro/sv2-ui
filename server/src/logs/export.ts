@@ -64,6 +64,17 @@ export function createDockerLogDemuxer(
 // `timestamp [container] [stream] message`.
 const DOCKER_LOG_TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T\S+?)\s(.*)$/;
 
+// Container log text is controlled by the mining workload and is written
+// verbatim into the exported file, which an operator may display in a
+// terminal: OSC-52 can overwrite the clipboard, CSI/C1 sequences can clear
+// or repaint the screen, and a mid-line carriage return can rewrite the
+// start of the line. Strip terminal-executable control characters while
+// keeping printable text: an escape sequence's printable parameters remain
+// as inert text (no introducer byte, nothing to act on), and tab survives
+// to preserve column alignment.
+// eslint-disable-next-line no-control-regex
+const TERMINAL_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+
 export function createLogLineFormatter(
   container: LogContainerRole,
   emitLine: (line: string) => void
@@ -80,7 +91,9 @@ export function createLogLineFormatter(
       parts.push(timestamp);
     }
     parts.push(`[${container}]`, `[${stream}]`, message);
-    return parts.join(' ');
+    // Sanitize the joined line, not just the message: the loose timestamp
+    // capture would otherwise let a container-crafted prefix carry controls.
+    return parts.join(' ').replace(TERMINAL_CONTROL_CHARS_RE, '');
   };
 
   const emitCompleted = (raw: string, stream: LogOutputStream): void => {

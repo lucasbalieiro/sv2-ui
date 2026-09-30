@@ -111,6 +111,47 @@ test('skips empty lines and strips carriage returns from CRLF output', () => {
   ]);
 });
 
+test('neutralizes terminal control sequences in downloaded log lines', () => {
+  const { lines, formatter } = collectLines();
+  // OSC-52 clipboard overwrite + BEL, followed by an ANSI clear-screen.
+  formatter.consume({
+    stream: 'stderr',
+    payload: '\u001b]52;c;Y3VybCBodHRwczovL2F0dGFja2VyLmludmFsaWQ=\u0007safe message\u001b[2J\n',
+  });
+  formatter.flush();
+
+  // Byte-level stripping leaves each sequence's printable parameters as
+  // inert text; the message survives and no control byte a terminal could
+  // act on reaches the file.
+  assert.match(lines.join('\n'), /safe message/);
+  assert.doesNotMatch(
+    lines.join('\n'),
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u,
+    'a downloaded text log must not retain raw terminal control bytes',
+  );
+});
+
+test('keeps tabs but strips mid-line carriage returns from downloaded log lines', () => {
+  const { lines, formatter } = collectLines();
+  formatter.consume({ stream: 'stdout', payload: 'attempt\rretry\taligned\n' });
+
+  assert.deepEqual(lines, ['[translator] [stdout] attemptretry\taligned']);
+});
+
+test('strips controls a container fakes inside a timestamp-shaped prefix', () => {
+  const { lines, formatter } = collectLines();
+  // A BEL inside the timestamp capture and an ESC in the message: both must
+  // go, even though only the message would be sanitized if the line were
+  // cleaned field by field.
+  formatter.consume({
+    stream: 'stdout',
+    payload: '2026-09-30T12:00:00\u0007.000Z forged\u001b[2K\n',
+  });
+
+  assert.deepEqual(lines, ['2026-09-30T12:00:00.000Z [translator] [stdout] forged[2K']);
+});
+
 test('keeps the export byte cap generous relative to rotated history', () => {
   assert.equal(CONTAINER_LOG_EXPORT_MAX_BYTES, 64 * 1024 * 1024);
 });
