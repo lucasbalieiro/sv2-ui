@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';
+import { PassThrough } from 'node:stream';
 import Docker from 'dockerode';
+import Modem from 'docker-modem';
 
-import { getBitcoinRpcProbeTransports, getDockerConnectionInfo, normalizeDockerError, getStackStatus } from './docker.js';
-import { DockerConnectionError } from './docker-errors.js';
+import {
+  containerLogsPath,
+  DOCKER_CALL_TIMEOUT_MS,
+  getBitcoinRpcProbeTransports,
+  getDockerConnectionInfo,
+  normalizeDockerError,
+  getStackStatus,
+  startJdc,
+  startTranslator,
+  streamContainerLogText,
+} from './docker.js';
+import { formatMergedLogLine, type MergedLogLine } from './logs/export.js';
+import { DockerConnectionError, isMissingContainerError } from './docker-errors.js';
 
 test('Bitcoin RPC probing tries host loopback before Docker host gateway', () => {
   assert.deepEqual(getBitcoinRpcProbeTransports(), [
@@ -266,4 +279,479 @@ test('normalizeDockerError maps proxy 404 to DockerConnectionError', () => {
   const result = normalizeDockerError(err);
   assert.ok(result instanceof DockerConnectionError);
   assert.match(result.message, /is not a Docker daemon \(HTTP 404\)/);
+});
+
+function dockerFrame(stream: 'stdout' | 'stderr', payload: string): Buffer {
+  const payloadBuffer = Buffer.from(payload, 'utf8');
+  const header = Buffer.alloc(8);
+  header.writeUInt8(stream === 'stderr' ? 2 : 1, 0);
+  header.writeUInt32BE(payloadBuffer.length, 4);
+  return Buffer.concat([header, payloadBuffer]);
+}
+
+function createLogSink() {
+  const chunks: string[] = [];
+  let stop: (() => void) | null = null;
+  return {
+    chunks,
+    // Stands in for the browser aborting the download: the response closes
+    // while the read may still be opening.
+    closeSink: () => {
+      const registered = stop;
+      stop = null;
+      registered?.();
+    },
+    sink: {
+      // Rendered here the way the merged writer does, so these assertions read
+      // as the text that would reach the file.
+      write: (line: MergedLogLine) => {
+        chunks.push(formatMergedLogLine(line) + '\n');
+        return true;
+      },
+      onDrain: () => undefined,
+      onClose: (registered: () => void) => {
+        stop = registered;
+      },
+    },
+  };
+}
+
+// The export dials the logs endpoint directly (container.logs() can only
+// return a stream while following), so the fake daemon is the container's
+// modem, which is where dockerode itself issues the request.
+function mockLogStream(
+  t: { mock: { method: (object: unknown, name: string, impl: () => unknown) => unknown } },
+  raw: PassThrough,
+  options: { tty?: boolean; startedAt?: string | null; onDial?: (opts: Record<string, unknown>) => void } = {}
+): void {
+  t.mock.method(Docker.prototype, 'getContainer', () => ({
+    id: 'container-id',
+    inspect: async () => ({
+      State: { StartedAt: options.startedAt === undefined ? '2026-01-01T00:00:00.000000000Z' : options.startedAt },
+      Config: { Tty: options.tty ?? false },
+    }),
+    modem: {
+      dial: (
+        dialOptions: Record<string, unknown>,
+        callback: (error: Error | null, stream: unknown) => void
+      ) => {
+        options.onDial?.(dialOptions);
+        callback(null, raw);
+      },
+    },
+  }));
+}
+
+function mockLogContainer(
+  t: { mock: { method: (object: unknown, name: string, impl: () => unknown) => unknown } },
+  raw: PassThrough
+): void {
+  mockLogStream(t, raw);
+}
+
+test('streams a container log history as formatted text', async (t) => {
+  const raw = new PassThrough();
+  let dialOptions: Record<string, unknown> | null = null;
+  mockLogStream(t, raw, { onDial: (options) => { dialOptions = options; } });
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+
+  // Frames arrive incrementally; the second frame completes the first line.
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z transla'));
+  raw.write(dockerFrame('stdout', 'tor up\n'));
+  raw.write(dockerFrame('stderr', 'boom\n'));
+  raw.end();
+
+  const stats = await pending;
+
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] translator up\n',
+    '[translator] [stderr] boom\n',
+  ]);
+  assert.equal(stats.bytes, chunks.join('').length);
+  assert.equal(stats.truncated, false);
+
+  // follow must stay off: the daemon only closes a non-followed log
+  // response, and that `end` is the export's completion signal.
+  const query = dialOptions?.options as Record<string, unknown>;
+  assert.equal(dialOptions?.isStream, true);
+  assert.equal(query.follow, false);
+  assert.equal(query.timestamps, true);
+  assert.equal(query.since, Math.floor(new Date('2026-01-01T00:00:00.000000000Z').getTime() / 1000));
+  assert.equal(query.until, undefined);
+});
+
+test('sends the log options in the URL the daemon actually receives', () => {
+  // docker-modem appends `options` as a querystring only when the path
+  // already contains '?'; otherwise the request goes out with no parameters
+  // at all and the daemon rejects it with 400 "must specify at least one of
+  // 'stdout' or 'stderr'". A fake modem cannot catch that, so check the URL
+  // the real modem would build from the path we hand it.
+  const modem = new Modem({ socketPath: '/var/run/docker.sock' });
+  const path = containerLogsPath('container-id');
+
+  assert.match(path, /\?$/, 'the modem drops the querystring without a "?"');
+  assert.equal(
+    `${path}${modem.buildQuerystring({
+      stdout: true,
+      stderr: true,
+      follow: false,
+      timestamps: true,
+      since: 1,
+    })}`,
+    '/containers/container-id/logs?stdout=true&stderr=true&follow=false&timestamps=true&since=1'
+  );
+});
+
+test('stops reading and reports truncation once the byte cap is reached', async (t) => {
+  const raw = new PassThrough();
+  const { chunks, sink } = createLogSink();
+
+  mockLogContainer(t, raw);
+  const pending = streamContainerLogText('translator', { maxBytes: 100, sink });
+
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z first line\n'));
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z second line\n'));
+  raw.end();
+
+  const stats = await pending;
+
+  assert.equal(stats.truncated, true);
+  assert.match(chunks[0], /first line\n$/);
+  assert.match(chunks[chunks.length - 1], /^\[log export for translator truncated at 100 bytes\]\n$/);
+  assert.equal(chunks.join('').includes('second line'), false);
+  assert.equal(raw.destroyed, true);
+});
+
+test('completes an export when the daemon closes the log stream', async (t) => {
+  const raw = new PassThrough();
+  mockLogContainer(t, raw);
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z backlog line\n'));
+  raw.end();
+
+  const stats = await pending;
+
+  assert.equal(stats.truncated, false);
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] backlog line\n',
+  ]);
+  assert.equal(raw.destroyed, true);
+});
+
+test('keeps the last line when the daemon never terminates it', async (t) => {
+  const raw = new PassThrough();
+  mockLogContainer(t, raw);
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+  // A crash message is the classic case: the final write carries no newline.
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z terminated\n'));
+  raw.write(dockerFrame('stderr', 'panic: boom'));
+  raw.end();
+
+  const stats = await pending;
+
+  assert.equal(stats.truncated, false);
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] terminated\n',
+    '[translator] [stderr] panic: boom\n',
+  ]);
+});
+
+test('waits for a slow daemon instead of exporting an empty history', async (t) => {
+  const raw = new PassThrough();
+  mockLogContainer(t, raw);
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+
+  let settled = false;
+  void pending.then(() => { settled = true; });
+
+  // Nothing has arrived yet. Treating the silence as "done" here is what
+  // silently produced a header-only export that still reported success.
+  await new Promise<void>((resolve) => setTimeout(resolve, 1_200));
+  assert.equal(settled, false);
+
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z late line\n'));
+  raw.end();
+
+  const stats = await pending;
+  assert.equal(stats.truncated, false);
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] late line\n',
+  ]);
+});
+
+test('a slow client delays the export instead of truncating it', async (t) => {
+  const raw = new PassThrough();
+  mockLogContainer(t, raw);
+
+  const chunks: string[] = [];
+  let resume: (() => void) | null = null;
+  let firstWrite = true;
+  const sink = {
+    // The first write reports backpressure, as a slow HTTP client would.
+    write: (line: MergedLogLine) => {
+      chunks.push(formatMergedLogLine(line) + '\n');
+      if (firstWrite) {
+        firstWrite = false;
+        return false;
+      }
+      return true;
+    },
+    onDrain: (fn: () => void) => { resume = fn; },
+    onClose: () => undefined,
+  };
+
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z one\n'));
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z two\n'));
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+  // Still waiting for the writer: backpressure must not end the export, and
+  // nothing may be reported as truncated.
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  raw.write(dockerFrame('stdout', '2026-01-01T00:00:00.000000000Z three\n'));
+  raw.end();
+  resume?.();
+
+  const stats = await pending;
+  assert.equal(stats.truncated, false);
+  assert.equal(raw.destroyed, true);
+});
+
+test('exports TTY container output as stdout lines without frame demuxing', async (t) => {
+  const raw = new PassThrough();
+  let dialOptions: Record<string, unknown> | null = null;
+  mockLogStream(t, raw, {
+    tty: true,
+    startedAt: null,
+    onDial: (options) => { dialOptions = options; },
+  });
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+
+  // TTY output carries no frame headers.
+  raw.write('2026-01-01T00:00:00.000000000Z raw tty output\n');
+  raw.end();
+
+  await pending;
+
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] raw tty output\n',
+  ]);
+  assert.equal((dialOptions?.options as Record<string, unknown>).since, undefined);
+});
+
+test('keeps multi-byte characters intact across TTY chunk boundaries', async (t) => {
+  const raw = new PassThrough();
+  mockLogStream(t, raw, { tty: true, startedAt: null });
+
+  const { chunks, sink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+
+  // The two-byte 'é' is split across two network chunks.
+  const text = Buffer.from('2026-01-01T00:00:00.000000000Z café\n', 'utf-8');
+  const splitAt = text.indexOf(0xc3) + 1;
+  raw.write(text.subarray(0, splitAt));
+  raw.write(text.subarray(splitAt));
+  raw.end();
+
+  await pending;
+
+  assert.deepEqual(chunks, [
+    '2026-01-01T00:00:00.000000000Z [translator] [stdout] café\n',
+  ]);
+});
+
+test('bounds how long opening a log stream may take', async (t) => {
+  // A Docker connection that accepts the request and then goes quiet: neither
+  // inspect nor the dial answers. Without a bound on the open the download
+  // stays pending forever, and nothing else shares this request to release it.
+  let dialed = false;
+  t.mock.method(Docker.prototype, 'getContainer', () => ({
+    inspect: async () => ({
+      State: { StartedAt: '2026-01-01T00:00:00.000000000Z' },
+      Config: { Tty: false },
+    }),
+    modem: {
+      dial: () => {
+        dialed = true;
+      },
+    },
+  }));
+
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = streamContainerLogText('translator', {
+    maxBytes: 1_000_000,
+    sink: createLogSink().sink,
+  });
+  t.mock.timers.tick(DOCKER_CALL_TIMEOUT_MS + 1);
+
+  const error = await pending.then(
+    () => null,
+    (thrown: Error) => thrown
+  );
+
+  assert.ok(error, 'expected the open to be abandoned rather than hang');
+  assert.match(error.message, /Failed to open log stream for translator container/);
+  assert.match(String(error.cause), /did not open the log stream/);
+  assert.equal(dialed, true, 'the dial was attempted, it just never answered');
+});
+
+test('carries an abort signal into the inspect and the dial', async (t) => {
+  const raw = new PassThrough();
+  let inspectOptions: Record<string, unknown> | null = null;
+  let dialOptions: Record<string, unknown> | null = null;
+  t.mock.method(Docker.prototype, 'getContainer', () => ({
+    inspect: async (options: Record<string, unknown>) => {
+      inspectOptions = options;
+      return { State: { StartedAt: null }, Config: { Tty: false } };
+    },
+    modem: {
+      dial: (
+        options: Record<string, unknown>,
+        callback: (error: Error | null, stream: unknown) => void
+      ) => {
+        dialOptions = options;
+        callback(null, raw);
+      },
+    },
+  }));
+
+  const pending = streamContainerLogText('translator', {
+    maxBytes: 1_000_000,
+    sink: createLogSink().sink,
+  });
+  raw.end();
+  await pending;
+
+  assert.ok(inspectOptions?.abortSignal instanceof AbortSignal);
+  // docker-modem only reads abortSignal from the top level of the dial options;
+  // inside `options` it is deleted (to keep it out of the query string) and
+  // otherwise ignored.
+  assert.ok(dialOptions?.abortSignal instanceof AbortSignal);
+});
+
+test('releases the export when the client goes away before the stream opens', async (t) => {
+  const raw = new PassThrough();
+  let dialed = false;
+  t.mock.method(Docker.prototype, 'getContainer', () => ({
+    // An inspect that never answers, standing in for a Docker connection that
+    // hangs after the request is accepted.
+    inspect: () => new Promise(() => undefined),
+    modem: {
+      dial: (
+        _options: Record<string, unknown>,
+        callback: (error: Error | null, stream: unknown) => void
+      ) => {
+        dialed = true;
+        callback(null, raw);
+      },
+    },
+  }));
+
+  const { chunks, sink, closeSink } = createLogSink();
+  const pending = streamContainerLogText('translator', { maxBytes: 1_000_000, sink });
+  // The browser aborts the download while the read is still opening. The close
+  // is registered before the open precisely so this reaches the read.
+  closeSink();
+
+  const error = await pending.then(
+    () => null,
+    (thrown: Error) => thrown
+  );
+
+  assert.ok(error, 'expected the abandoned open to reject');
+  assert.match(error.message, /Failed to open log stream for translator container/);
+  assert.match(String(error.cause), /cancelled by the client/);
+  assert.equal(dialed, false, 'no stream should have been dialed');
+  assert.equal(chunks.length, 0);
+});
+
+test('keeps missing-container errors recognizable through the stream wrapper', async (t) => {
+  const dockerError = Object.assign(new Error('No such container: sv2-translator'), {
+    statusCode: 404,
+    reason: 'no such container',
+    json: { message: 'No such container: sv2-translator' },
+  });
+  t.mock.method(Docker.prototype, 'getContainer', () => ({
+    inspect: async () => ({ State: { StartedAt: '2026-01-01T00:00:00Z' }, Config: { Tty: false } }),
+    modem: {
+      dial: (
+        _options: Record<string, unknown>,
+        callback: (error: Error | null) => void
+      ) => callback(dockerError),
+    },
+  }));
+
+  const error = await streamContainerLogText('translator', {
+    maxBytes: 1_000_000,
+    sink: createLogSink().sink,
+  }).then(
+    () => null,
+    (thrown: Error) => thrown
+  );
+
+  assert.ok(error, 'expected the stream open to be rejected');
+  assert.equal(isMissingContainerError(error), true);
+  assert.match(error.message, /Failed to open log stream for translator container/);
+});
+
+test('mining containers are created with bounded json-file log rotation', async (t) => {
+  const created: Array<Record<string, unknown>> = [];
+  // removeContainer only needs the failure to surface; it is tolerated.
+  t.mock.method(Docker.prototype, 'getContainer', () => {
+    throw new Error('no such container');
+  });
+  t.mock.method(Docker.prototype, 'info', (async () => ({
+    LoggingDriver: 'json-file',
+  })) as never);
+  t.mock.method(Docker.prototype, 'createContainer', ((options: Record<string, unknown>) => {
+    created.push(options);
+    return Promise.resolve({ start: async () => undefined });
+  }) as never);
+
+  await startTranslator('/tmp/translator.toml', 'image:translator');
+  await startJdc('/tmp/jdc.toml', '/tmp/node.sock', 'testnet', 'image:jdc');
+
+  assert.equal(created.length, 2);
+  for (const options of created) {
+    assert.deepEqual((options.HostConfig as { LogConfig?: unknown }).LogConfig, {
+      Type: 'json-file',
+      Config: { 'max-size': '10m', 'max-file': '3' },
+    });
+  }
+});
+
+test('mining containers keep the operator log driver when it is not json-file', async (t) => {
+  const created: Array<Record<string, unknown>> = [];
+  t.mock.method(Docker.prototype, 'getContainer', () => {
+    throw new Error('no such container');
+  });
+  // A journald host: naming json-file here would silently move the mining
+  // containers out of the operator's log pipeline and apply rotation options
+  // the driver does not understand.
+  t.mock.method(Docker.prototype, 'info', (async () => ({
+    LoggingDriver: 'journald',
+  })) as never);
+  t.mock.method(Docker.prototype, 'createContainer', ((options: Record<string, unknown>) => {
+    created.push(options);
+    return Promise.resolve({ start: async () => undefined });
+  }) as never);
+
+  await startTranslator('/tmp/translator.toml', 'image:translator');
+
+  assert.equal(created.length, 1);
+  assert.equal((created[0].HostConfig as { LogConfig?: unknown }).LogConfig, undefined);
 });

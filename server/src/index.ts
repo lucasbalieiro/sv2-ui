@@ -19,7 +19,7 @@ import {
   reconcileServiceConfigFiles,
   type PreparedServiceConfig,
 } from './service-config.js';
-import { DockerConnectionError } from './docker-errors.js';
+import { DockerConnectionError, isMissingContainerError } from './docker-errors.js';
 import {
   TRANSLATOR_MONITORING_PORT,
   JDC_MONITORING_PORT,
@@ -39,9 +39,12 @@ import {
   getDockerConnectionInfo,
   expandHomePath,
   readContainerLogs,
+  streamContainerLogText,
   probeBitcoinSocketWithDocker,
   autoDiscoverBitcoinRpc
 } from './docker.js';
+import { createMergedLogWriter } from './logs/merge.js';
+import { CONTAINER_LOG_EXPORT_MAX_BYTES } from './logs/export.js';
 import { getLogDiagnostics, getLogStreams, readCollatedLogLines } from './logs/diagnostics.js';
 import { ActivePoolTracker } from './active-pool.js';
 import {
@@ -752,21 +755,12 @@ app.get('/api/logs/diagnostics', async (_req, res) => {
 app.get('/api/logs/raw', async (req, res) => {
   try {
     const state = await loadState();
-    const tailStr = req.query.tail as string;
-    let lines: Awaited<ReturnType<typeof readCollatedLogLines>>;
-
-    if (tailStr === 'all') {
-      // Pull full history since container start by ignoring the per-container
-      // tail cap applied inside readCollatedLogLines.
-      lines = await readCollatedLogLines(state.mode, readContainerLogs);
-    } else {
-      const tailParam = parseInt(tailStr, 10);
-      const tail = Number.isFinite(tailParam) ? Math.min(Math.max(tailParam, 1), 500) : 200;
-      // Pass the tail as a value, never wrapped in a fresh closure: snapshot
-      // coalescing keys on (provider, mode, tail), so a per-request wrapper
-      // would give this most-polled route its own Docker read every time.
-      lines = await readCollatedLogLines(state.mode, readContainerLogs, tail);
-    }
+const tailParam = parseInt(req.query.tail as string, 10);
+    const tail = Number.isFinite(tailParam) ? Math.min(Math.max(tailParam, 1), 500) : 200;
+    // Pass the tail as a value, never wrapped in a fresh closure: snapshot
+    // coalescing keys on (provider, mode, tail), so a per-request wrapper
+    // would give this most-polled route its own Docker read every time.
+    const lines = await readCollatedLogLines(state.mode, readContainerLogs, tail);
 
     res.json({
       configured: state.configured,
@@ -778,6 +772,82 @@ app.get('/api/logs/raw', async (req, res) => {
   } catch (error) {
     console.error('Raw logs error:', error);
     res.status(500).json({ error: 'Failed to get container logs' });
+  }
+});
+
+/**
+ * GET /api/logs/download - Stream the retained container log history as a
+ * plain-text attachment. Unlike the JSON routes this never materializes the
+ * full history: lines are demuxed as each docker stream produces them, the
+ * response is capped per container (CONTAINER_LOG_EXPORT_MAX_BYTES) with a
+ * truncation marker, and the client saves the streamed body as a single file.
+ *
+ * Every container is read concurrently and the results are interleaved by
+ * timestamp, so the export preserves the order of events across containers.
+ * The previous client-side download sorted lines from all containers together
+ * and lost that; here each container is already in time order, so only one
+ * line per container is held back while merging. Every line carries its own
+ * `[container]` tag, so the file needs no per-container section headers.
+ */
+app.get('/api/logs/download', async (_req, res) => {
+  try {
+    const state = await loadState();
+    const containers = getLogStreams(state.mode).flatMap((stream) => stream.containers);
+    if (containers.length === 0) {
+      return res.status(404).json({ error: 'No log streams configured' });
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    res.setHeader('content-type', 'text/plain; charset=utf-8');
+    res.setHeader('content-disposition', `attachment; filename="sv2-logs-${stamp}.txt"`);
+    res.write(`# sv2-logs exported ${new Date().toISOString()}\n`);
+
+    const writer = createMergedLogWriter(
+      {
+        write: (text) => res.write(text),
+        onDrain: (resume) => res.on('drain', resume),
+        onClose: (stop) => res.once('close', stop),
+      },
+      containers
+    );
+
+    // Started together, not one after another: a container's history can be
+    // far longer than the other's, and reading them in sequence would put all
+    // of one before any of the other.
+    await Promise.all(
+      containers.map(async (container) => {
+        try {
+          await streamContainerLogText(container, {
+            maxBytes: CONTAINER_LOG_EXPORT_MAX_BYTES,
+            sink: writer.sinkFor(container),
+          });
+          writer.finish(container);
+        } catch (error) {
+          // Downloads are best-effort: report what could not be read and keep
+          // the export going for the remaining containers.
+          const missing = isMissingContainerError(error);
+          if (!missing) {
+            console.error('Log download error:', error);
+          }
+          writer.fail(container, missing ? 'container is not running' : 'log read failed');
+        }
+      })
+    );
+
+    // Resolves once every container has finished and everything queued behind
+    // them has been written.
+    await writer.completed();
+
+    if (!res.writableEnded) {
+      res.end();
+    }
+  } catch (error) {
+    console.error('Log download error:', error);
+    if (res.headersSent) {
+      res.end();
+    } else {
+      res.status(500).json({ error: 'Failed to export container logs' });
+    }
   }
 });
 

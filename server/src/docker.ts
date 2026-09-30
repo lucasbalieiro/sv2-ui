@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path'
 import Docker from 'dockerode';
 import os from 'os';
+import { StringDecoder } from 'string_decoder';
 import type { BitcoinNetwork, HealthStatus } from '@sv2-ui/shared';
 import {
   BITCOIN_PROBE_IMAGE,
@@ -17,6 +18,15 @@ import {
 } from '@sv2-ui/shared';
 import type { SetupData, ContainerStatus } from './types.js';
 import type { ContainerLogLine, LogContainerRole, LogOutputStream } from './logs/types.js';
+import {
+  createDockerLogDemuxer,
+  createLogLineFormatter,
+  DOCKER_LOG_HEADER_SIZE,
+  type ContainerLogExportStats,
+  type ContainerLogLineSink,
+  type DockerLogChunk,
+  formatMergedLogLine,
+} from './logs/export.js';
 import { isMissingContainerError, DockerConnectionError } from './docker-errors.js';
 import { getImageSelectionForSetup } from '@sv2-ui/shared';
 import { bitcoinSocketValidatorScript } from './bitcoin-socket-validator.js';
@@ -224,7 +234,52 @@ const NETWORK_NAME = CONTAINER_NAMES.network;
 const CONFIG_VOLUME = CONTAINER_NAMES.configVolume;
 const TRANSLATOR_CONTAINER = CONTAINER_NAMES.translator;
 const JDC_CONTAINER = CONTAINER_NAMES.jdc;
-const DOCKER_LOG_HEADER_SIZE = 8;
+
+// Bound the retained log history of the mining containers at the source.
+// Without it the json-file driver keeps every byte ever logged: the history
+// the logs panel, diagnostics snapshots, and the download export all read
+// from grows without limit (an attacker spamming the network-facing
+// services can inflate it at will), and the host disk fills up. 3 x 10 MiB
+// keeps a useful diagnostic window per container.
+const CONTAINER_LOG_ROTATION = {
+  'max-size': '10m',
+  'max-file': '3',
+} as const;
+
+// The rotation options above are json-file specific, and naming the driver
+// explicitly overrides whatever the host's daemon.json defaults to. On a
+// journald, syslog, fluentd or local host that would silently pull the
+// translator and JDC out of the operator's log pipeline, so the config is
+// only applied when json-file is already the default. `undefined` leaves the
+// daemon's own driver and its rotation settings in charge.
+type MiningContainerLogConfig =
+  | { Type: 'json-file'; Config: typeof CONTAINER_LOG_ROTATION }
+  | undefined;
+
+async function miningContainerLogConfig(): Promise<MiningContainerLogConfig> {
+  const daemonLogDriver = await defaultLoggingDriver();
+  if (daemonLogDriver !== 'json-file') {
+    return undefined;
+  }
+
+  return {
+    Type: 'json-file',
+    Config: { ...CONTAINER_LOG_ROTATION },
+  };
+}
+
+// Probed at container creation rather than cached: starts are rare, the
+// daemon's default driver can be reconfigured under us, and a probe failure
+// must not block creating the container at all.
+async function defaultLoggingDriver(): Promise<string | null> {
+  try {
+    const info = await docker.info();
+    return info.LoggingDriver ?? null;
+  } catch (error) {
+    console.error('Could not read the daemon logging driver:', error);
+    return null;
+  }
+}
 
 export function getDockerConnectionInfo(): DockerConnectionConfig {
   refreshDockerConnection();
@@ -595,11 +650,6 @@ const LOG_CONTAINER_NAMES: Record<LogContainerRole, string> = {
   jdc: JDC_CONTAINER,
 };
 
-type DockerLogChunk = {
-  stream: LogOutputStream;
-  payload: string;
-};
-
 // Docker uses an 8-byte framing header for non-TTY stdout/stderr multiplexing.
 // Reference: https://docs.docker.com/reference/api/engine/version/v1.45/#tag/Container/operation/ContainerAttach
 function demuxDockerLogBuffer(buffer: Buffer): DockerLogChunk[] {
@@ -662,7 +712,12 @@ export async function readContainerLogs(
 
   try {
     const dockerContainer = docker.getContainer(LOG_CONTAINER_NAMES[container]);
-    const info = await dockerContainer.inspect({ abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS) });
+    // Both calls are bounded. An abort on only one of them leaves a hung
+    // request poisoning every caller that shares the resulting promise, long
+    // after Docker became reachable again.
+    const info = await dockerContainer.inspect({
+      abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS),
+    });
     const startTime = info.State?.StartedAt;
 
     const logOptions: Docker.ContainerLogsOptions & { follow: false } = {
@@ -671,7 +726,7 @@ export async function readContainerLogs(
       follow: false,
       timestamps: true,
       ...(options.tail !== undefined ? { tail: options.tail } : {}),
-      abortSignal: AbortSignal.timeout(2000),
+      abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS),
     };
 
     const containerStart = startTime
@@ -693,6 +748,284 @@ export async function readContainerLogs(
       cause: error instanceof Error ? error : new Error(String(error)),
     });
   }
+}
+
+/**
+ * Request path for a container's logs endpoint.
+ *
+ * The trailing '?' is load-bearing, not cosmetic: docker-modem appends the
+ * dial `options` as a querystring only when the path already contains a '?'.
+ * Without it the request goes out with no parameters and the daemon rejects it
+ * with 400 "must specify at least one of 'stdout' or 'stderr'".
+ * container.logs() builds its path the same way.
+ */
+export function containerLogsPath(containerId: string): string {
+  return `/containers/${containerId}/logs?`;
+}
+
+/**
+ * Open a container's log endpoint as a raw response stream.
+ *
+ * `container.logs()` cannot do this: dockerode sets `isStream` from `follow`,
+ * so a non-following read is handed back as one fully buffered Buffer. Dialing
+ * the endpoint directly keeps the body streaming while `follow: false` tells
+ * the daemon to close the response once the backlog is delivered.
+ *
+ * `abortSignal` bounds the dial, and only the dial. docker-modem passes it to
+ * `http.request` but never attaches it to the response stream on the
+ * `isStream` path, so aborting it while the body is streaming tears down a
+ * download mid-flight. The caller therefore aborts only when it has already
+ * given up on the open.
+ */
+function openContainerLogStream(
+  dockerContainer: Docker.Container,
+  containerStart: number | null,
+  abortSignal: AbortSignal
+): Promise<NodeJS.ReadableStream> {
+  return new Promise<NodeJS.ReadableStream>((resolve, reject) => {
+    // Dialed through the container, exactly as container.logs() does, so the
+    // same modem instance, auth and error mapping apply.
+    dockerContainer.modem.dial(
+      {
+        path: containerLogsPath(dockerContainer.id),
+        method: 'GET',
+        isStream: true,
+        // docker-modem only reads abortSignal from the top level of the dial
+        // options; inside `options` it is deleted (to keep it out of the query
+        // string) and otherwise ignored.
+        abortSignal,
+        // Same mapping container.logs() uses, so a missing container keeps
+        // arriving as a recognizable 404 for isMissingContainerError.
+        statusCodes: {
+          200: true,
+          404: 'no such container',
+          500: 'server error',
+        },
+        options: {
+          stdout: true,
+          stderr: true,
+          follow: false,
+          timestamps: true,
+          ...(containerStart !== null ? { since: containerStart } : {}),
+        },
+      },
+      (error: Error | null, stream: unknown) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stream as NodeJS.ReadableStream);
+      }
+    );
+  });
+}
+
+/**
+ * Stream a container's full retained log history as formatted text lines
+ * through `sink.write`, without ever buffering the whole history. Chunks
+ * are demuxed and formatted as they arrive; the byte cap stops the read by
+ * destroying the docker stream mid-flight (the daemon stops pushing).
+ *
+ * The read is deliberately NOT a follow stream. `container.logs()` only
+ * returns a stream while following, and a followed stream on a running
+ * container stays open and silent forever after the backlog (verified with
+ * `docker logs --follow --until`) — it never emits `end`. Detecting the end
+ * by watching for silence is a guess: it truncates a slow client that pauses
+ * the stream, it can expire before the daemon sends its first byte, and it
+ * drops whatever the formatter still holds.
+ *
+ * Instead this dials the logs endpoint directly with `isStream` so the
+ * response body arrives as a stream while `follow: false` lets the daemon
+ * close it as soon as the backlog is delivered. `end` is then the daemon's
+ * own signal, the buffered tail line is always flushed, and backpressure
+ * only ever delays the transfer instead of ending the export.
+ *
+ * Unlike readContainerLogs there is no 2s abort: the export's lifetime is
+ * bounded by the daemon closing the stream, the byte cap, and the consumer
+ * going away instead.
+ */
+export async function streamContainerLogText(
+  container: LogContainerRole,
+  options: { maxBytes: number; sink: ContainerLogLineSink }
+): Promise<ContainerLogExportStats> {
+  refreshDockerConnection();
+
+  const dockerContainer = docker.getContainer(LOG_CONTAINER_NAMES[container]);
+
+  // Both halves of the open are bounded, and the client leaving is honoured
+  // even before there is a stream to destroy. Neither `inspect()` nor the dial
+  // carries a timeout of its own here (unlike readContainerLogs), and this is
+  // the only reader of this stream, so a half-open Docker connection would
+  // otherwise leave the download pending forever with nothing to release it.
+  const openAbort = new AbortController();
+  let openTimer: ReturnType<typeof setTimeout> | null = null;
+  const openTimeout = new Promise<never>((_, reject) => {
+    openTimer = setTimeout(() => {
+      openAbort.abort();
+      reject(
+        new Error(
+          `Docker did not open the log stream for ${container} within ` +
+            `${DOCKER_CALL_TIMEOUT_MS / 1000}s`
+        )
+      );
+    }, DOCKER_CALL_TIMEOUT_MS);
+  });
+  // Only raced while opening. Past that point the timer is cleared and nothing
+  // rejects, so these handlers exist to keep an abandoned promise from
+  // surfacing as an unhandled rejection.
+  openTimeout.catch(() => undefined);
+
+  // Set once the stream exists; until then the consumer's close only has to
+  // abandon the open.
+  let stopStream: (() => void) | null = null;
+  let abandonOpen: (error: Error) => void = () => undefined;
+  const abandoned = new Promise<never>((_, reject) => {
+    abandonOpen = reject;
+  });
+  abandoned.catch(() => undefined);
+
+  options.sink.onClose(() => {
+    abandonOpen(new Error(`Log export for ${container} was cancelled by the client`));
+    openAbort.abort();
+    stopStream?.();
+  });
+
+  let info: Docker.ContainerInspectInfo;
+  let raw: NodeJS.ReadableStream & { destroy: (error?: Error) => void };
+  try {
+    // Not wrapped, so a 404 here stays recognizable to isMissingContainerError
+    // exactly as it is for every other caller.
+    info = await Promise.race([
+      dockerContainer.inspect({ abortSignal: openAbort.signal }),
+      openTimeout,
+      abandoned,
+    ]);
+
+    const startTime = info.State?.StartedAt;
+    const containerStart = startTime
+      ? Math.floor(new Date(startTime).getTime() / 1000)
+      : null;
+
+    raw = (await Promise.race([
+      openContainerLogStream(dockerContainer, containerStart, openAbort.signal),
+      openTimeout,
+      abandoned,
+    ])) as NodeJS.ReadableStream & { destroy: (error?: Error) => void };
+  } catch (error) {
+    if (openTimer !== null) {
+      clearTimeout(openTimer);
+      openTimer = null;
+    }
+    // A container that cannot be read is reported, not fatal, so only the
+    // failures that are about opening this stream get the wrapper.
+    throw new Error(`Failed to open log stream for ${container} container`, {
+      cause: error instanceof Error ? error : new Error(String(error)),
+    });
+  }
+
+  // The open is done, so the dial's abort signal is no longer ours to fire:
+  // dropping the timer is what keeps a long download from being torn down.
+  if (openTimer !== null) {
+    clearTimeout(openTimer);
+    openTimer = null;
+  }
+
+  return await new Promise<ContainerLogExportStats>((resolve, reject) => {
+    let bytes = 0;
+    let truncated = false;
+    let settled = false;
+
+    function finish(error?: Error): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      raw.destroy();
+      if (error) {
+        reject(error);
+      } else {
+        resolve({ bytes, truncated });
+      }
+    }
+
+    stopStream = () => finish();
+
+    const formatter = createLogLineFormatter(container, (line) => {
+      if (truncated) {
+        return;
+      }
+
+      const lineBytes = Buffer.byteLength(formatMergedLogLine(line), 'utf8') + 1;
+      if (bytes + lineBytes > options.maxBytes) {
+        truncated = true;
+        // A marker, not a log line: it is this export's own text, and it
+        // inherits the container's position in the merged stream.
+        options.sink.write({
+          kind: 'marker',
+          container,
+          message: `[log export for ${container} truncated at ${options.maxBytes} bytes]`,
+        });
+        finish();
+        return;
+      }
+
+      bytes += lineBytes;
+      if (!options.sink.write(line)) {
+        raw.pause();
+      }
+    });
+
+    // TTY containers carry no frame headers; everything is stdout payload. Each
+    // network chunk is decoded on its own there, so a multi-byte character
+    // split across two chunks needs a stateful decoder. The framed path is
+    // already safe: the demuxer reassembles whole frames before decoding.
+    let ttyDecoder: StringDecoder | null = null;
+    const demux = info.Config?.Tty
+      ? (chunk: Buffer) => {
+          ttyDecoder ??= new StringDecoder('utf-8');
+          formatter.consume({ stream: 'stdout', payload: ttyDecoder.write(chunk) });
+        }
+      : createDockerLogDemuxer((chunk) => formatter.consume(chunk));
+
+    raw.on('data', (chunk: Buffer) => {
+      try {
+        demux(chunk);
+      } catch (error) {
+        finish(new Error(`Failed to demux log stream for ${container} container`, {
+          cause: error instanceof Error ? error : new Error(String(error)),
+        }));
+      }
+    });
+
+    // The daemon closes the stream once the backlog is delivered, so `end` is
+    // its own completion signal rather than something inferred from silence.
+    // Flushing here covers a last line the daemon never terminated.
+    raw.on('end', () => {
+      if (ttyDecoder) {
+        formatter.consume({ stream: 'stdout', payload: ttyDecoder.end() });
+      }
+      formatter.flush();
+      finish();
+    });
+
+    raw.on('error', (error: Error) => {
+      finish(new Error(`Failed to read log stream for ${container} container`, {
+        cause: error,
+      }));
+    });
+
+    raw.on('close', () => {
+      if (ttyDecoder) {
+        formatter.consume({ stream: 'stdout', payload: ttyDecoder.end() });
+      }
+      formatter.flush();
+      finish();
+    });
+
+    options.sink.onDrain(() => raw.resume());
+    // The close is handled above, before the stream was opened, so that a
+    // client that goes away mid-open is released too.
+  });
 }
 
 /**
@@ -825,8 +1158,10 @@ async function getContainerStatus(name: string): Promise<ContainerStatus | null>
  * Start the Translator container.
  * - In Docker: uses shared volume (sv2-config) for config
  * - In dev: bind-mounts config file from host filesystem
+ *
+ * Exported for tests so the container creation options stay asserted.
  */
-async function startTranslator(configPath: string, image: string): Promise<void> {
+export async function startTranslator(configPath: string, image: string): Promise<void> {
   await removeContainer(TRANSLATOR_CONTAINER);
 
   const binds = isRunningInsideDocker()
@@ -847,6 +1182,7 @@ async function startTranslator(configPath: string, image: string): Promise<void>
       },
       NetworkMode: NETWORK_NAME,
       RestartPolicy: { Name: 'no' },
+      LogConfig: await miningContainerLogConfig(),
     },
     ExposedPorts: {
       '34255/tcp': {},
@@ -862,8 +1198,10 @@ async function startTranslator(configPath: string, image: string): Promise<void>
  * Start the JDC container.
  * - In Docker: uses shared volume (sv2-config) for config
  * - In dev: bind-mounts config file from host filesystem
+ *
+ * Exported for tests so the container creation options stay asserted.
  */
-async function startJdc(
+export async function startJdc(
   configPath: string,
   bitcoinSocketPath: string,
   network: string,
@@ -899,6 +1237,7 @@ async function startJdc(
       },
       NetworkMode: NETWORK_NAME,
       RestartPolicy: { Name: 'no' },
+      LogConfig: await miningContainerLogConfig(),
     },
     ExposedPorts: {
       '34265/tcp': {},

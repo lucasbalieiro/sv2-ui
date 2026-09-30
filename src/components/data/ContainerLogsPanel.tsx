@@ -1,25 +1,21 @@
-import { useLayoutEffect, useRef, useCallback, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Download, Pause, Play } from 'lucide-react';
 import type { ContainerLogLine } from '@/types/log-diagnostics';
 import { cn } from '@/lib/utils';
+
+// Full retained history is exported by a dedicated server endpoint that
+// streams formatted text with a hard byte cap, so the browser never
+// materializes a JSON object graph of the whole log history. The link is
+// followed as a normal navigation: the browser streams the body straight to
+// disk under the server's content-disposition name, with no client-side
+// timeout that could abort a large export on a slow link and no second full
+// copy of it in the JS heap.
+export const LOG_DOWNLOAD_PATH = '/api/logs/download';
 
 interface ContainerLogsPanelProps {
   lines: ContainerLogLine[];
   isLoading: boolean;
   isJdMode: boolean;
-}
-
-function buildDownloadContent(lines: ContainerLogLine[]): string {
-  return lines
-    .map((line) => {
-      const parts: string[] = [];
-      if (line.timestamp) parts.push(line.timestamp);
-      parts.push(`[${line.container}]`);
-      parts.push(`[${line.stream}]`);
-      parts.push(line.message);
-      return parts.join(' ');
-    })
-    .join('\n');
 }
 
 function getLogColorClass(line: ContainerLogLine) {
@@ -69,26 +65,6 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
     if (el && !isPaused) el.scrollTop = el.scrollHeight;
   }, [visibleLines, isPaused]);
 
-  const handleDownload = useCallback(async () => {
-    try {
-      const response = await fetch('/api/logs/raw?tail=all', {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!response.ok) return;
-      const data = await response.json() as { lines: ContainerLogLine[] };
-      const content = buildDownloadContent(data.lines);
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sv2-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 100);
-    } catch {
-      // download failed silently
-    }
-  }, []);
-
   if (isLoading && visibleLines.length === 0) {
     return (
       <div className="h-48 flex items-center justify-center rounded-md bg-black/80 text-zinc-500 text-xs font-mono">
@@ -119,14 +95,15 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
           {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
           {isPaused ? 'Resume' : 'Pause'}
         </button>
-        <button
-          onClick={handleDownload}
+        <a
+          href={LOG_DOWNLOAD_PATH}
+          download
           className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
           title="Download logs as .txt"
         >
           <Download className="h-3.5 w-3.5" />
           Download logs
-        </button>
+        </a>
       </div>
       <div
         ref={scrollRef}
