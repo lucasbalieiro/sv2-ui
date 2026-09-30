@@ -758,15 +758,14 @@ app.get('/api/logs/raw', async (req, res) => {
     if (tailStr === 'all') {
       // Pull full history since container start by ignoring the per-container
       // tail cap applied inside readCollatedLogLines.
-      lines = await readCollatedLogLines(state.mode, (container) =>
-        readContainerLogs(container)
-      );
+      lines = await readCollatedLogLines(state.mode, readContainerLogs);
     } else {
       const tailParam = parseInt(tailStr, 10);
       const tail = Number.isFinite(tailParam) ? Math.min(Math.max(tailParam, 1), 500) : 200;
-      lines = await readCollatedLogLines(state.mode, (container, opts) =>
-        readContainerLogs(container, { ...opts, tail })
-      );
+      // Pass the tail as a value, never wrapped in a fresh closure: snapshot
+      // coalescing keys on (provider, mode, tail), so a per-request wrapper
+      // would give this most-polled route its own Docker read every time.
+      lines = await readCollatedLogLines(state.mode, readContainerLogs, tail);
     }
 
     res.json({
