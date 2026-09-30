@@ -48,8 +48,25 @@ const DOCKER_ERROR_PATTERNS = [
   /cannot connect to the docker/i,
 ];
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Await a promise, falling back to null after ms. The fallback timer is
+ * cleared as soon as the race settles, so a timer that loses the race cannot
+ * keep this process' event loop alive after main() finishes.
+ */
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function hasConfigError(output: string): boolean {
@@ -193,10 +210,7 @@ async function runConfigCommand(
   });
 
   try {
-    const result = await Promise.race([
-      exited,
-      delay(CONFIG_ACCEPTANCE_WINDOW_MS).then(() => null),
-    ]);
+    const result = await raceWithTimeout(exited, CONFIG_ACCEPTANCE_WINDOW_MS);
 
     if (!result) {
       return { kind: 'still-running', output: output.text() };
@@ -208,7 +222,7 @@ async function runConfigCommand(
       await execFileAsync('docker', ['kill', name]).catch(() => undefined);
       child.kill('SIGINT');
     }
-    await Promise.race([exited, delay(10_000)]);
+    await raceWithTimeout(exited, 10_000);
     await execFileAsync('docker', ['rm', '--force', name]).catch(() => undefined);
   }
 }
