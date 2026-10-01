@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { authFetch } from '@/lib/auth-fetch';
 
 export type TelegramSettings = {
   connected: boolean;
@@ -39,7 +40,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
   if (!data) {
     throw new Error(
-      'Telegram settings API is unavailable. Restart the SV2 UI backend from this branch.'
+      'Telegram settings are unavailable. Check that the SV2 UI backend is running.'
     );
   }
 
@@ -51,11 +52,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function fetchSettings(): Promise<TelegramSettings> {
-  return parseResponse(await fetch('/api/telegram'));
+  return parseResponse(await authFetch('/api/telegram'));
 }
 
 async function connectBot(botToken: string): Promise<TelegramSettings> {
-  return parseResponse(await fetch('/api/telegram/connect', {
+  return parseResponse(await authFetch('/api/telegram/connect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ botToken }),
@@ -63,13 +64,13 @@ async function connectBot(botToken: string): Promise<TelegramSettings> {
 }
 
 async function pairChat(): Promise<TelegramSettings> {
-  return parseResponse(await fetch('/api/telegram/pair', {
+  return parseResponse(await authFetch('/api/telegram/pair', {
     method: 'POST',
   }));
 }
 
 async function updateSettings(update: TelegramSettingsUpdate): Promise<TelegramSettings> {
-  return parseResponse(await fetch('/api/telegram', {
+  return parseResponse(await authFetch('/api/telegram', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(update),
@@ -77,13 +78,13 @@ async function updateSettings(update: TelegramSettingsUpdate): Promise<TelegramS
 }
 
 async function sendTestMessage(): Promise<SuccessResponse> {
-  return parseResponse(await fetch('/api/telegram/test', {
+  return parseResponse(await authFetch('/api/telegram/test', {
     method: 'POST',
   }));
 }
 
 async function disconnectBot(): Promise<TelegramSettings> {
-  return parseResponse(await fetch('/api/telegram', {
+  return parseResponse(await authFetch('/api/telegram', {
     method: 'DELETE',
   }));
 }

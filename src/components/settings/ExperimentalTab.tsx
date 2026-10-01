@@ -16,16 +16,27 @@ import { useTelegram, type TelegramSettings } from '@/hooks/useTelegram';
 
 const TELEGRAM_EXPERIMENT_STORAGE_KEY = 'sv2-ui-experiment-telegram-enabled';
 
+// localStorage can throw (blocked site data, some private modes). This is
+// only a UI convenience, so fall back to the server state instead of crashing.
 function readStoredTelegramExperimentState(): boolean | null {
   if (typeof window === 'undefined') return null;
 
-  const stored = window.localStorage.getItem(TELEGRAM_EXPERIMENT_STORAGE_KEY);
-  return stored === null ? null : stored === 'true';
+  try {
+    const stored = window.localStorage.getItem(TELEGRAM_EXPERIMENT_STORAGE_KEY);
+    return stored === null ? null : stored === 'true';
+  } catch {
+    return null;
+  }
 }
 
 function storeTelegramExperimentState(enabled: boolean): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(TELEGRAM_EXPERIMENT_STORAGE_KEY, String(enabled));
+
+  try {
+    window.localStorage.setItem(TELEGRAM_EXPERIMENT_STORAGE_KEY, String(enabled));
+  } catch {
+    // The toggle still works for this visit; it just won't be remembered.
+  }
 }
 
 export function isTelegramExperimentOpen(

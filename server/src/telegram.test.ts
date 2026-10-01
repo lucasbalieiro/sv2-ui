@@ -7,14 +7,18 @@ import test, { type TestContext } from 'node:test';
 import {
   collectPaginatedMonitoringItems,
   formatTelegramStatus,
+  formatWorkerName,
+  mapWithConcurrency,
   getTelegramWorkerCount,
   getStatusChangeMessage,
+  TelegramApiError,
   TelegramConfigError,
   TelegramService,
+  toTelegramApiError,
 } from './telegram.js';
 import type { TelegramActivitySnapshot } from './telegram.js';
 
-const BOT_TOKEN = '123456:test-token';
+const BOT_TOKEN = '123456:AAE-test_token-0123456789abcdef';
 const BOT = {
   id: 123456,
   is_bot: true,
@@ -438,4 +442,360 @@ test('migrates the original proof-of-concept settings', async (t) => {
   assert.equal(settings.notifyOnPoolChange, true);
   assert.equal(settings.notifyOnStatusChange, true);
   assert.equal(settings.summaryIntervalMinutes, 60);
+});
+
+test('never forwards a Telegram 401 or 404 as an auth failure of this API', () => {
+  for (const upstreamStatus of [401, 404]) {
+    const error = toTelegramApiError(upstreamStatus, 'Unauthorized');
+    assert.equal(error.statusCode, 400);
+    assert.match(error.message, /bot token/);
+  }
+
+  assert.equal(toTelegramApiError(409, 'Conflict').statusCode, 409);
+  assert.equal(toTelegramApiError(429, 'Too Many Requests').statusCode, 429);
+  assert.equal(toTelegramApiError(400, 'Bad Request: chat not found').message, 'chat not found');
+  assert.equal(toTelegramApiError(500, undefined).statusCode, 502);
+});
+
+test('reports a revoked bot token as a bad request', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const fetchImplementation = (async () => new Response(JSON.stringify({
+    ok: false,
+    error_code: 401,
+    description: 'Unauthorized',
+  }), { status: 401 })) as typeof fetch;
+  const service = new TelegramService(settingsFile, fetchImplementation);
+
+  await assert.rejects(
+    service.connectBot(BOT_TOKEN),
+    (error: unknown) => error instanceof TelegramApiError && error.statusCode === 400,
+  );
+});
+
+test('stores the bot token owner-only and replaces a planted symlink', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const outside = path.join(path.dirname(settingsFile), 'outside.json');
+  await fs.writeFile(outside, '{}');
+  await fs.symlink(outside, settingsFile);
+
+  const service = new TelegramService(
+    settingsFile,
+    createTelegramFetch({ getMe: [BOT] }).fetchImplementation,
+  );
+  await service.connectBot(BOT_TOKEN);
+
+  const stat = await fs.lstat(settingsFile);
+  assert.equal(stat.isFile(), true);
+  assert.equal(stat.mode & 0o777, 0o600);
+  assert.equal(await fs.readFile(outside, 'utf8'), '{}');
+});
+
+test('ignores a symlinked settings file on load', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const { settingsFile: realFile } = await pairService(t);
+  await fs.symlink(realFile, settingsFile);
+
+  const service = new TelegramService(settingsFile, createTelegramFetch().fetchImplementation);
+  const settings = await service.getSettings();
+  assert.equal(settings.connected, false);
+});
+
+test('does not treat an unreachable Docker daemon as mining stopping', async (t) => {
+  const { service, telegram } = await pairService(t);
+  await service.updateSettings({ notifyOnStatusChange: true });
+  const sentBefore = telegram.callsFor('sendMessage').length;
+
+  await service.poll(async () => snapshot());
+  await service.poll(async () => snapshot({
+    unavailable: true,
+    running: false,
+    channels: null,
+  }));
+  await service.poll(async () => snapshot());
+
+  assert.equal(telegram.callsFor('sendMessage').length, sentBefore);
+  assert.match(
+    formatTelegramStatus(snapshot({ unavailable: true, running: false })),
+    /Status: Unknown/,
+  );
+});
+
+test('throttles activity snapshots but still answers bot commands', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const service = new TelegramService(settingsFile, telegram.fetchImplementation, {
+    activityIntervalMs: 60_000,
+  });
+  const connected = await service.connectBot(BOT_TOKEN);
+  const pairingCode = new URL(connected.pairingUrl ?? '').searchParams.get('start');
+  telegram.enqueue('getUpdates', [{
+    update_id: 1,
+    message: {
+      message_id: 1,
+      text: `/start ${pairingCode}`,
+      chat: { id: 987, type: 'private', username: 'miner_one' },
+    },
+  }]);
+  await service.pairChat();
+
+  let snapshots = 0;
+  const provider = async () => {
+    snapshots += 1;
+    return snapshot();
+  };
+
+  await service.poll(provider);
+  await service.poll(provider);
+  assert.equal(snapshots, 1);
+
+  telegram.enqueue('getUpdates', [{
+    update_id: 2,
+    message: {
+      message_id: 2,
+      text: '/help',
+      chat: { id: 987, type: 'private', username: 'miner_one' },
+    },
+  }]);
+  const sentBefore = telegram.callsFor('sendMessage').length;
+  await service.poll(provider);
+  assert.equal(snapshots, 1);
+  assert.equal(telegram.callsFor('sendMessage').length, sentBefore + 1);
+});
+
+test('drops baselines for channels that are gone', async (t) => {
+  const { service, telegram } = await pairService(t);
+  const channel = (key: string, blocksFound: number) => ({
+    key,
+    userIdentity: key,
+    blocksFound,
+    bestDifficulty: 10,
+  });
+
+  await service.poll(async () => snapshot({ channels: [channel('old', 0)] }));
+  await service.poll(async () => snapshot({ channels: [channel('new', 0)] }));
+  const sentBefore = telegram.callsFor('sendMessage').length;
+
+  // A key that disappeared has no baseline any more, so it is re-baselined
+  // instead of being compared against stale data.
+  await service.poll(async () => snapshot({ channels: [channel('new', 0), channel('old', 3)] }));
+  assert.equal(telegram.callsFor('sendMessage').length, sentBefore);
+
+  await service.poll(async () => snapshot({ channels: [channel('new', 1), channel('old', 3)] }));
+  assert.match(String(telegram.callsFor('sendMessage').at(-1)?.body.text), /Block found!\nPool: Primary pool\nWorker: new/);
+});
+
+test('stops paginating on an invalid total, a short page, or too many items', async () => {
+  let calls = 0;
+  const invalidTotal = await collectPaginatedMonitoringItems(async () => {
+    calls += 1;
+    return { total: Number.NaN, items: Array.from({ length: 100 }, () => 1) };
+  });
+  assert.equal(invalidTotal, null);
+  assert.equal(calls, 1);
+
+  calls = 0;
+  const ignoresOffset = await collectPaginatedMonitoringItems(async () => {
+    calls += 1;
+    return { total: 1_000_000_000, items: Array.from({ length: 100 }, () => 1) };
+  }, 100, 1_000);
+  assert.equal(ignoresOffset, null);
+  assert.equal(calls, 11);
+
+  const shortPage = await collectPaginatedMonitoringItems(async () => (
+    { total: 1_000, items: [1, 2, 3] }
+  ));
+  assert.deepEqual(shortPage, [1, 2, 3]);
+});
+
+test('limits concurrent monitoring requests', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 3, async (value) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return value * 2;
+  });
+
+  assert.equal(maxActive, 3);
+  assert.deepEqual(results, [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
+});
+
+test('sanitizes untrusted worker names', () => {
+  assert.equal(
+    formatWorkerName('rig\n\n🔴 SV2 mining stopped\r\nUpdate now'),
+    'rig 🔴 SV2 mining stopped Update now',
+  );
+  assert.equal(formatWorkerName('‮evil‬'), 'evil');
+  assert.equal(formatWorkerName('   '), 'unnamed');
+  assert.equal(Array.from(formatWorkerName('x'.repeat(500))).length, 64);
+});
+
+test('a disconnect during pairing is not undone when pairing finishes', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  let releaseSend: () => void = () => undefined;
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith('/sendMessage')) await sendGate;
+    return telegram.fetchImplementation(input, init);
+  }) as typeof fetch;
+
+  const service = new TelegramService(settingsFile, fetchImplementation);
+  const connected = await service.connectBot(BOT_TOKEN);
+  const pairingCode = new URL(connected.pairingUrl ?? '').searchParams.get('start');
+  telegram.enqueue('getUpdates', [{
+    update_id: 5,
+    message: {
+      message_id: 1,
+      text: `/start ${pairingCode}`,
+      chat: { id: 987, type: 'private', username: 'miner_one' },
+    },
+  }]);
+
+  const pairing = service.pairChat();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await service.disconnect();
+  releaseSend();
+
+  await assert.rejects(pairing, TelegramConfigError);
+  assert.equal((await service.getSettings()).connected, false);
+  await assert.rejects(fs.access(settingsFile));
+});
+
+test('a disconnect always lands after queued settings writes', async (t) => {
+  const { service, settingsFile } = await pairService(t);
+
+  const updates = [
+    service.updateSettings({ notifyOnWorkerChange: true }),
+    service.updateSettings({ notifyOnRejectedShares: true }),
+  ];
+  await service.disconnect();
+  await Promise.all(updates);
+
+  await assert.rejects(fs.access(settingsFile));
+  const reloaded = new TelegramService(settingsFile, createTelegramFetch().fetchImplementation);
+  assert.equal((await reloaded.getSettings()).connected, false);
+});
+
+test('messages from strangers do not rewrite the settings file', async (t) => {
+  const { service, settingsFile, telegram } = await pairService(t);
+  const before = await fs.stat(settingsFile);
+
+  telegram.enqueue('getUpdates', Array.from({ length: 100 }, (_, index) => ({
+    update_id: 1_000 + index,
+    message: {
+      message_id: index,
+      text: '/status',
+      chat: { id: 5_000 + index, type: 'private' },
+    },
+  })));
+  const sentBefore = telegram.calls.length;
+  await service.poll(async () => snapshot());
+
+  const after = await fs.stat(settingsFile);
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  // Only the getUpdates call itself; strangers get no reply.
+  assert.equal(telegram.calls.length - sentBefore, 1);
+
+  // The offset still advanced in memory.
+  await service.poll(async () => snapshot());
+  assert.equal(telegram.callsFor('getUpdates').at(-1)?.body.offset, 1_100);
+});
+
+test('a rejected alert is dropped and does not block later alerts', async (t) => {
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  let rejectNextSend = false;
+  let failNextSendTransiently = false;
+  const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith('/sendMessage')) {
+      if (rejectNextSend) {
+        rejectNextSend = false;
+        return new Response(JSON.stringify({
+          ok: false,
+          error_code: 400,
+          description: 'Bad Request: message is too long',
+        }), { status: 400 });
+      }
+      if (failNextSendTransiently) {
+        failNextSendTransiently = false;
+        throw new Error('network down');
+      }
+    }
+    return telegram.fetchImplementation(input, init);
+  }) as typeof fetch;
+  // Pair with the plain fetch, then load the same settings file into a
+  // service that uses the failure-injecting fetch.
+  const { settingsFile } = await pairService(t, telegram);
+  const flaky = new TelegramService(settingsFile, fetchImplementation);
+
+  const block = (blocksFound: number) => snapshot({
+    channels: [{
+      key: 'translator:server:extended:1:miner-one',
+      userIdentity: 'miner-one',
+      blocksFound,
+      bestDifficulty: 1250,
+    }],
+  });
+
+  await flaky.poll(async () => block(0));
+  rejectNextSend = true;
+  await flaky.poll(async () => block(1));
+  const sendsAfterRejection = telegram.callsFor('sendMessage').length;
+
+  // The rejected alert is not retried, and the next block is delivered.
+  await flaky.poll(async () => block(2));
+  assert.equal(telegram.callsFor('sendMessage').length, sendsAfterRejection + 1);
+  assert.match(String(telegram.callsFor('sendMessage').at(-1)?.body.text), /Channel total: 2/);
+
+  // A transient failure keeps the alert queued and sends it exactly once later.
+  failNextSendTransiently = true;
+  await assert.rejects(flaky.poll(async () => block(3)));
+  await flaky.poll(async () => block(3));
+  const texts = telegram.callsFor('sendMessage').map((call) => String(call.body.text));
+  assert.equal(texts.filter((text) => /Channel total: 3/.test(text)).length, 1);
+});
+
+test('pairing finds the /start message behind a flood of other updates', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const service = new TelegramService(settingsFile, telegram.fetchImplementation);
+  const connected = await service.connectBot(BOT_TOKEN);
+  const pairingCode = new URL(connected.pairingUrl ?? '').searchParams.get('start');
+
+  telegram.enqueue(
+    'getUpdates',
+    Array.from({ length: 100 }, (_, index) => ({
+      update_id: index + 1,
+      message: { message_id: index, text: 'spam', chat: { id: 1, type: 'private' } },
+    })),
+    [{
+      update_id: 101,
+      message: {
+        message_id: 101,
+        text: `/start ${pairingCode}`,
+        chat: { id: 987, type: 'private', username: 'miner_one' },
+      },
+    }],
+  );
+
+  const paired = await service.pairChat();
+  assert.equal(paired.paired, true);
+  assert.deepEqual(
+    telegram.callsFor('getUpdates').map((call) => call.body.offset),
+    [0, 101],
+  );
+});
+
+test('rejects a malformed bot token before calling Telegram', async (t) => {
+  const settingsFile = await createSettingsFile(t);
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const service = new TelegramService(settingsFile, telegram.fetchImplementation);
+
+  await assert.rejects(service.connectBot('123/../../evil'), TelegramConfigError);
+  assert.equal(telegram.calls.length, 0);
 });

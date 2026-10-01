@@ -62,9 +62,11 @@ import {
   buildSessionCookie,
   parseCookies,
 } from './sessions.js';
+import { readJsonWithLimit } from './bounded-json.js';
 import {
   collectPaginatedMonitoringItems,
   getTelegramWorkerCount,
+  mapWithConcurrency,
   TelegramApiError,
   TelegramConfigError,
   TelegramService,
@@ -95,7 +97,11 @@ const AUTO_START_RETRY_INTERVAL_MS = 30_000;
 const AUTO_START_MIN_BACKOFF_MS = 60_000;
 const AUTO_START_MAX_BACKOFF_MS = 5 * 60_000;
 const TELEGRAM_SETTINGS_FILE = path.join(CONFIG_DIR, 'telegram.json');
+// Bot commands and settings buttons are checked this often (one getUpdates call).
 const TELEGRAM_POLL_INTERVAL_MS = 5_000;
+// Mining activity for alerts (Docker inspect plus monitoring API reads) is
+// sampled less often so the background monitor stays cheap.
+const TELEGRAM_ACTIVITY_INTERVAL_MS = 30_000;
 
 type StackBusyReason = 'auto-start' | 'manual';
 
@@ -104,7 +110,9 @@ let autoStartFailureCount = 0;
 let nextAutoStartAttemptAt = 0;
 let autoStartSetupReviewLogged = false;
 const activePoolTracker = new ActivePoolTracker(readContainerLogs);
-const telegramService = new TelegramService(TELEGRAM_SETTINGS_FILE);
+const telegramService = new TelegramService(TELEGRAM_SETTINGS_FILE, fetch, {
+  activityIntervalMs: TELEGRAM_ACTIVITY_INTERVAL_MS,
+});
 let telegramMonitorTimer: ReturnType<typeof setInterval> | null = null;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1104,12 +1112,23 @@ type MonitoringMiningChannel = {
   blocks_found: number;
 };
 
+// Same cap as the Bitcoin RPC probe: monitoring responses are untrusted input.
+const MAX_MONITORING_RESPONSE_BYTES = 1024 * 1024;
+// JD mode reads channels per downstream client. Anyone who can reach the JDC
+// can open connections, so bound both the fan-out and the parallelism.
+const MAX_TELEGRAM_MONITORED_CLIENTS = 200;
+const TELEGRAM_MONITORING_CONCURRENCY = 4;
+
 async function fetchMonitoringJson<T>(url: string): Promise<T | null> {
   try {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(5000),
     });
-    return response.ok ? await response.json() as T : null;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    return await readJsonWithLimit(response, MAX_MONITORING_RESPONSE_BYTES) as T;
   } catch {
     return null;
   }
@@ -1120,7 +1139,15 @@ function combineMonitoringChannelPage<T>(
 ): {
   items: TaggedMonitoringChannel<T>[];
   total: number;
-} {
+} | null {
+  if (
+    !isJsonObject(page) ||
+    !Array.isArray(page.extended_channels) ||
+    !Array.isArray(page.standard_channels)
+  ) {
+    return null;
+  }
+
   return {
     items: [
       ...page.extended_channels.map((channel) => ({
@@ -1152,8 +1179,46 @@ async function fetchAllMonitoringItems<T>(endpoint: string): Promise<T[] | null>
     const page = await fetchMonitoringJson<MonitoringItemsPage<T>>(
       `${endpoint}?offset=${offset}&limit=${limit}`
     );
-    return page ? { items: page.items, total: page.total } : null;
+    return isJsonObject(page) ? { items: page.items, total: page.total } : null;
   });
+}
+
+function toTelegramMiningChannel(
+  keyPrefix: string,
+  kind: TaggedMonitoringChannel<unknown>['kind'],
+  channel: Partial<MonitoringMiningChannel>,
+): TelegramMiningChannel | null {
+  if (
+    !isJsonObject(channel) ||
+    !Number.isSafeInteger(channel.channel_id) ||
+    typeof channel.user_identity !== 'string' ||
+    !Number.isSafeInteger(channel.blocks_found) ||
+    typeof channel.best_diff !== 'number' ||
+    !Number.isFinite(channel.best_diff)
+  ) {
+    return null;
+  }
+
+  return {
+    key: `${keyPrefix}:${kind}:${channel.channel_id}:${channel.user_identity}`,
+    userIdentity: channel.user_identity,
+    blocksFound: channel.blocks_found as number,
+    bestDifficulty: channel.best_diff,
+  };
+}
+
+function sumShareCounter(
+  channels: TaggedMonitoringChannel<MonitoringServerChannel>[] | null,
+  field: 'shares_submitted' | 'shares_acknowledged' | 'shares_rejected',
+): number | null {
+  if (!channels) return null;
+  let total = 0;
+  for (const { channel } of channels) {
+    const value = isJsonObject(channel) ? channel[field] : undefined;
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    total += value;
+  }
+  return total;
 }
 
 async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> {
@@ -1161,6 +1226,7 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
 
   if (!status.running || !status.mode) {
     return {
+      unavailable: status.dockerError !== null,
       running: false,
       poolName: status.poolName,
       activePoolIndex: status.activePoolIndex,
@@ -1188,34 +1254,39 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
   const clients = isJdMode ? global?.sv2_clients : global?.sv1_clients;
   let miningChannels: TelegramMiningChannel[] | null = null;
 
-  if (isJdMode && monitoringClients) {
-    const downstreamResponses = await Promise.all(
-      monitoringClients.map(async (client) => ({
+  const clientIdsAreValid = monitoringClients?.every((client) =>
+    isJsonObject(client) && Number.isSafeInteger(client.client_id) && client.client_id >= 0
+  ) ?? false;
+
+  if (
+    isJdMode &&
+    monitoringClients &&
+    clientIdsAreValid &&
+    monitoringClients.length <= MAX_TELEGRAM_MONITORED_CLIENTS
+  ) {
+    const downstreamResponses = await mapWithConcurrency(
+      monitoringClients,
+      TELEGRAM_MONITORING_CONCURRENCY,
+      async (client) => ({
         clientId: client.client_id,
         channels: await fetchAllMonitoringChannels<MonitoringMiningChannel>(
           `${baseUrl}/clients/${client.client_id}/channels`
         ),
-      }))
+      }),
     );
 
     if (downstreamResponses.every((response) => response.channels !== null)) {
       miningChannels = downstreamResponses.flatMap(({ clientId, channels }) => {
         if (!channels) return [];
-        return channels.map(({ kind, channel }) => ({
-          key: `jdc:${clientId}:${kind}:${channel.channel_id}:${channel.user_identity}`,
-          userIdentity: channel.user_identity,
-          blocksFound: channel.blocks_found,
-          bestDifficulty: channel.best_diff,
-        }));
+        return channels.flatMap(({ kind, channel }) => (
+          toTelegramMiningChannel(`jdc:${clientId}`, kind, channel) ?? []
+        ));
       });
     }
   } else if (!isJdMode && serverChannels) {
-    miningChannels = serverChannels.map(({ kind, channel }) => ({
-      key: `translator:server:${kind}:${channel.channel_id}:${channel.user_identity}`,
-      userIdentity: channel.user_identity,
-      blocksFound: channel.blocks_found,
-      bestDifficulty: channel.best_diff,
-    }));
+    miningChannels = serverChannels.flatMap(({ kind, channel }) => (
+      toTelegramMiningChannel('translator:server', kind, channel) ?? []
+    ));
   }
 
   return {
@@ -1228,15 +1299,9 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
       global?.sv1_clients,
       global?.sv2_clients,
     ),
-    sharesSubmitted: serverChannels
-      ? serverChannels.reduce((sum, item) => sum + item.channel.shares_submitted, 0)
-      : null,
-    sharesAccepted: serverChannels
-      ? serverChannels.reduce((sum, item) => sum + item.channel.shares_acknowledged, 0)
-      : null,
-    sharesRejected: serverChannels
-      ? serverChannels.reduce((sum, item) => sum + item.channel.shares_rejected, 0)
-      : null,
+    sharesSubmitted: sumShareCounter(serverChannels, 'shares_submitted'),
+    sharesAccepted: sumShareCounter(serverChannels, 'shares_acknowledged'),
+    sharesRejected: sumShareCounter(serverChannels, 'shares_rejected'),
     channels: miningChannels,
   };
 }
