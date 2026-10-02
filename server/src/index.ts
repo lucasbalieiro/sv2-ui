@@ -1163,6 +1163,7 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
     return {
       running: false,
       poolName: status.poolName,
+      activePoolIndex: status.activePoolIndex,
       hashrate: null,
       workers: null,
       sharesSubmitted: null,
@@ -1220,6 +1221,7 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
   return {
     running: true,
     poolName: status.poolName,
+    activePoolIndex: status.activePoolIndex,
     hashrate: clients?.total_hashrate ?? global?.server?.total_hashrate ?? null,
     workers: getTelegramWorkerCount(
       isJdMode,
