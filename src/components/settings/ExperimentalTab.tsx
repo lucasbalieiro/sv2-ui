@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Bot,
   ExternalLink,
@@ -7,12 +7,40 @@ import {
   Unplug,
 } from 'lucide-react';
 
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { FieldError } from '@/components/ui/field-error';
 import { Label } from '@/components/ui/label';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Switch } from '@/components/ui/switch';
 import { useTelegram, type TelegramSettings } from '@/hooks/useTelegram';
+
+type AlertOptionKey = Extract<keyof TelegramSettings, `notifyOn${string}`>;
+
+const ALERT_OPTIONS: ReadonlyArray<{ key: AlertOptionKey; title: string }> = [
+  { key: 'notifyOnBlockFound', title: 'Block found' },
+  { key: 'notifyOnBestDifficulty', title: 'New best difficulty' },
+  { key: 'notifyOnPoolChange', title: 'Pool failover' },
+  { key: 'notifyOnStatusChange', title: 'Mining start and stop' },
+  { key: 'notifyOnWorkerChange', title: 'Worker changes' },
+  { key: 'notifyOnRejectedShares', title: 'Rejected shares' },
+];
+
+// Same choices as the summary button of the Telegram /settings menu.
+const SUMMARY_INTERVAL_OPTIONS = [0, 15, 60, 6 * 60];
+
+function getSummaryOptions(current: number): number[] {
+  return SUMMARY_INTERVAL_OPTIONS.includes(current)
+    ? SUMMARY_INTERVAL_OPTIONS
+    : [...SUMMARY_INTERVAL_OPTIONS, current].sort((left, right) => left - right);
+}
+
+function formatSummaryInterval(minutes: number): string {
+  if (minutes === 0) return 'Off';
+  if (minutes % 60 === 0) return `Every ${minutes / 60} h`;
+  return `Every ${minutes} min`;
+}
 
 const TELEGRAM_EXPERIMENT_STORAGE_KEY = 'sv2-ui-experiment-telegram-enabled';
 
@@ -70,32 +98,15 @@ export function ExperimentalTab() {
     clearError,
   } = useTelegram();
   const [botToken, setBotToken] = useState('');
-  const [summaryInterval, setSummaryInterval] = useState('60');
   const [telegramSetupEnabled, setTelegramSetupEnabled] = useState<boolean | null>(
     readStoredTelegramExperimentState,
   );
-
-  useEffect(() => {
-    if (settings) {
-      setSummaryInterval(String(settings.summaryIntervalMinutes));
-    }
-  }, [settings]);
 
   const handleConnect = async () => {
     clearError();
     try {
       await connect(botToken);
       setBotToken('');
-    } catch {
-      // Mutation errors are rendered from the hook state.
-    }
-  };
-
-  const handleUpdateSummary = async () => {
-    clearError();
-    const value = Number(summaryInterval);
-    try {
-      await update({ summaryIntervalMinutes: value });
     } catch {
       // Mutation errors are rendered from the hook state.
     }
@@ -154,323 +165,232 @@ export function ExperimentalTab() {
         </p>
       </div>
 
-      <div className="space-y-3">
-        <ExperimentToggleCard
-          id="telegram-experiment"
-          title="Telegram activity updates"
-          enabled={telegramExperimentOpen}
-          disabled={isPending}
-          onEnabledChange={handleTelegramExperimentChange}
-        >
-          {!settings.paired && (
-            <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-              <li>
-                Create a bot with{' '}
-                <a
-                  href="https://t.me/BotFather"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-primary hover:underline"
-                >
-                  @BotFather
-                </a>{' '}
-                and copy its token.
-              </li>
-              <li>Paste the token below and connect.</li>
-              <li>Open the bot in Telegram, press Start, then check pairing.</li>
-            </ol>
-          )}
+      <Card className="glass-card shadow-md">
+        <CardHeader>
+          <div className="flex items-center justify-between gap-4">
+            <CardTitle id="telegram-experiment-title">Telegram activity updates</CardTitle>
+            <Switch
+              id="telegram-experiment-enabled"
+              checked={telegramExperimentOpen}
+              onCheckedChange={handleTelegramExperimentChange}
+              disabled={isPending}
+              aria-labelledby="telegram-experiment-title"
+              className="shrink-0"
+            />
+          </div>
+        </CardHeader>
 
-          {!settings.connected && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="telegram-bot-token">Bot token</Label>
-                <Input
-                  id="telegram-bot-token"
-                  type="password"
-                  autoComplete="off"
-                  value={botToken}
-                  onChange={(event) => setBotToken(event.target.value)}
-                  placeholder="Paste the token from @BotFather"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Stored only on your SV2 UI server. Use a bot made just for SV2 UI.
-                </p>
-              </div>
+        {telegramExperimentOpen && (
+          <CardContent className="space-y-6">
+            {!settings.paired && (
+              <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+                <li>
+                  Create a bot with{' '}
+                  <a
+                    href="https://t.me/BotFather"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-primary hover:underline"
+                  >
+                    @BotFather
+                  </a>{' '}
+                  and copy its token.
+                </li>
+                <li>Paste the token below and connect.</li>
+                <li>Open the bot in Telegram, press Start, then check pairing.</li>
+              </ol>
+            )}
 
-              <Button
-                onClick={() => void handleConnect()}
-                disabled={isPending || botToken.trim().length === 0}
-              >
-                {isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Bot className="mr-2 h-4 w-4" />
-                )}
-                Connect bot
-              </Button>
-            </div>
-          )}
-
-          {settings.connected && !settings.paired && (
-            <div className="space-y-4">
-              <div className="rounded-md border border-border bg-muted/30 p-4">
-                <div className="flex items-center gap-2 font-medium">
-                  <Bot className="h-4 w-4 text-primary" />
-                  {settings.botName} · @{settings.botUsername}
-                </div>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Open Telegram, press Start, then check pairing.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <Button onClick={openPairingLink} disabled={!settings.pairingUrl}>
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Open Telegram
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    clearError();
-                    runMutation(pair());
-                  }}
-                  disabled={isPending}
-                >
-                  {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Check pairing
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    clearError();
-                    runMutation(disconnect());
-                  }}
-                  disabled={isPending}
-                >
-                  Use a different bot
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {settings.paired && (
-            <div className="space-y-6">
-              <div className="flex flex-col gap-3 rounded-md border border-green-500/30 bg-green-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <p className="font-medium">Paired with {settings.recipient}</p>
-                  <p className="text-sm text-muted-foreground">
-                    Alerts come from @{settings.botUsername}. Send{' '}
-                    <span className="font-mono">/settings</span> to it to change them from Telegram.
+            {!settings.connected && (
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-bot-token">Bot token</Label>
+                  <PasswordInput
+                    id="telegram-bot-token"
+                    autoComplete="off"
+                    value={botToken}
+                    onChange={(event) => setBotToken(event.target.value)}
+                    placeholder="Paste the token from @BotFather"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Stored only on your SV2 UI server. Use a bot made just for SV2 UI.
                   </p>
                 </div>
+
                 <Button
-                  variant="outline"
                   size="sm"
-                  onClick={() => {
-                    clearError();
-                    runMutation(sendTest());
-                  }}
-                  disabled={isPending}
+                  onClick={() => void handleConnect()}
+                  disabled={isPending || botToken.trim().length === 0}
                 >
-                  <Send className="mr-2 h-4 w-4" />
-                  Send test
+                  {isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Bot className="mr-2 h-4 w-4" />
+                  )}
+                  Connect bot
                 </Button>
               </div>
+            )}
 
-              <div className="space-y-5">
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-block-found">Block found</Label>
-                  <Switch
-                    id="telegram-block-found"
-                    checked={settings.notifyOnBlockFound}
-                    onCheckedChange={(notifyOnBlockFound) => {
+            {settings.connected && !settings.paired && (
+              <div className="space-y-3">
+                <SettingRow
+                  title={`${settings.botName ?? 'Telegram bot'} · @${settings.botUsername}`}
+                  description="Open Telegram, press Start, then check pairing."
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={openPairingLink} disabled={!settings.pairingUrl}>
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Open Telegram
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
                       clearError();
-                      runMutation(update({ notifyOnBlockFound }));
+                      runMutation(pair());
                     }}
-                    disabled={isPending || !settings.enabled}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-best-difficulty">New best difficulty</Label>
-                  <Switch
-                    id="telegram-best-difficulty"
-                    checked={settings.notifyOnBestDifficulty}
-                    onCheckedChange={(notifyOnBestDifficulty) => {
+                    disabled={isPending}
+                  >
+                    {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Check pairing
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
                       clearError();
-                      runMutation(update({ notifyOnBestDifficulty }));
+                      runMutation(disconnect());
                     }}
-                    disabled={isPending || !settings.enabled}
-                  />
+                    disabled={isPending}
+                  >
+                    Use a different bot
+                  </Button>
                 </div>
+              </div>
+            )}
 
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-pool-change">Pool failover</Label>
-                  <Switch
-                    id="telegram-pool-change"
-                    checked={settings.notifyOnPoolChange}
-                    onCheckedChange={(notifyOnPoolChange) => {
-                      clearError();
-                      runMutation(update({ notifyOnPoolChange }));
-                    }}
-                    disabled={isPending || !settings.enabled}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-status-changes">Mining start and stop</Label>
-                  <Switch
-                    id="telegram-status-changes"
-                    checked={settings.notifyOnStatusChange}
-                    onCheckedChange={(notifyOnStatusChange) => {
-                      clearError();
-                      runMutation(update({ notifyOnStatusChange }));
-                    }}
-                    disabled={isPending || !settings.enabled}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-worker-changes">Worker changes</Label>
-                  <Switch
-                    id="telegram-worker-changes"
-                    checked={settings.notifyOnWorkerChange}
-                    onCheckedChange={(notifyOnWorkerChange) => {
-                      clearError();
-                      runMutation(update({ notifyOnWorkerChange }));
-                    }}
-                    disabled={isPending || !settings.enabled}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <Label htmlFor="telegram-rejected-shares">Rejected shares</Label>
-                  <Switch
-                    id="telegram-rejected-shares"
-                    checked={settings.notifyOnRejectedShares}
-                    onCheckedChange={(notifyOnRejectedShares) => {
-                      clearError();
-                      runMutation(update({ notifyOnRejectedShares }));
-                    }}
-                    disabled={isPending || !settings.enabled}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="telegram-summary-interval">Summary interval in minutes</Label>
-                  <div className="flex max-w-sm gap-2">
-                    <Input
-                      id="telegram-summary-interval"
-                      type="number"
-                      min={0}
-                      max={1440}
-                      step={15}
-                      value={summaryInterval}
-                      onChange={(event) => setSummaryInterval(event.target.value)}
-                      disabled={isPending || !settings.enabled}
-                    />
+            {settings.paired && (
+              <>
+                <Alert variant="success">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="font-medium">Paired with {settings.recipient}</p>
+                      <p className="text-muted-foreground">
+                        Alerts come from @{settings.botUsername}. Send{' '}
+                        <span className="font-mono">/settings</span> to it to change them from Telegram.
+                      </p>
+                    </div>
                     <Button
                       variant="outline"
-                      onClick={() => void handleUpdateSummary()}
-                      disabled={isPending || !settings.enabled || summaryInterval.length === 0}
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => {
+                        clearError();
+                        runMutation(sendTest());
+                      }}
+                      disabled={isPending}
                     >
-                      Save
+                      <Send className="mr-2 h-4 w-4" />
+                      Send test
                     </Button>
                   </div>
+                </Alert>
+
+                <div className="space-y-3">
+                  {ALERT_OPTIONS.map(({ key, title }) => (
+                    <SettingRow key={key} title={title}>
+                      <Switch
+                        id={`telegram-${key}`}
+                        checked={settings[key]}
+                        onCheckedChange={(checked) => {
+                          clearError();
+                          runMutation(update({ [key]: checked }));
+                        }}
+                        disabled={isPending || !settings.enabled}
+                        aria-label={title}
+                        className="shrink-0"
+                      />
+                    </SettingRow>
+                  ))}
+
+                  <SettingRow title="Summary" htmlFor="telegram-summary-interval">
+                    <select
+                      id="telegram-summary-interval"
+                      value={settings.summaryIntervalMinutes}
+                      onChange={(event) => {
+                        clearError();
+                        runMutation(update({ summaryIntervalMinutes: Number(event.target.value) }));
+                      }}
+                      disabled={isPending || !settings.enabled}
+                      className="h-8 w-32 shrink-0 rounded-lg border border-input bg-background px-3 text-sm outline-none transition-all focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 disabled:opacity-50"
+                    >
+                      {getSummaryOptions(settings.summaryIntervalMinutes).map((minutes) => (
+                        <option key={minutes} value={minutes}>
+                          {formatSummaryInterval(minutes)}
+                        </option>
+                      ))}
+                    </select>
+                  </SettingRow>
                 </div>
-              </div>
 
-              <div className="border-t border-border pt-4">
-                <Button
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    clearError();
-                    runMutation(disconnect());
-                  }}
-                  disabled={isPending}
-                >
-                  <Unplug className="mr-2 h-4 w-4" />
-                  Disconnect Telegram
-                </Button>
-              </div>
-            </div>
-          )}
+                {testSent && !error && (
+                  <p className="text-sm text-green-600 dark:text-green-400" aria-live="polite">
+                    Test update sent to Telegram.
+                  </p>
+                )}
 
-          {testSent && !error && (
-            <p className="text-sm text-green-600 dark:text-green-400" aria-live="polite">
-              Test update sent to Telegram.
-            </p>
-          )}
-        </ExperimentToggleCard>
+                <div className="border-t border-border pt-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      clearError();
+                      runMutation(disconnect());
+                    }}
+                    disabled={isPending}
+                  >
+                    <Unplug className="mr-2 h-4 w-4" />
+                    Disconnect Telegram
+                  </Button>
+                </div>
+              </>
+            )}
 
-        {error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-          </p>
+            <FieldError message={error} role="alert" />
+          </CardContent>
         )}
-      </div>
+      </Card>
     </div>
   );
 }
 
-function ExperimentToggleCard({
-  id,
+/**
+ * Same bordered row used for settings elsewhere in the app (Configuration tab,
+ * advanced mining options): title on the left, control on the right.
+ */
+function SettingRow({
   title,
   description,
-  enabled,
-  disabled = false,
-  onEnabledChange,
+  htmlFor,
   children,
 }: {
-  id: string;
   title: string;
   description?: string;
-  enabled: boolean;
-  disabled?: boolean;
-  onEnabledChange: (enabled: boolean) => void;
-  children: ReactNode;
+  htmlFor?: string;
+  children?: ReactNode;
 }) {
-  const switchId = `${id}-enabled`;
-  const labelId = `${id}-label`;
-  const contentId = `${id}-content`;
-
   return (
-    <Card className={`overflow-hidden shadow-none transition-colors ${
-      enabled ? 'border-primary/35' : 'border-border/70'
-    }`}>
-      <div className="flex items-center gap-4 p-4 sm:p-5">
-        <div className="min-w-0 flex-1">
-          <label id={labelId} htmlFor={switchId} className="font-medium text-foreground">
-            {title}
-          </label>
-          {description && (
-            <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
-          )}
-        </div>
-        <Switch
-          id={switchId}
-          checked={enabled}
-          onCheckedChange={onEnabledChange}
-          disabled={disabled}
-          aria-labelledby={labelId}
-          aria-controls={contentId}
-          aria-expanded={enabled}
-          className="shrink-0"
-        />
+    <div className="flex items-center justify-between gap-4 rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
+      <div className="min-w-0 space-y-0.5">
+        {htmlFor ? (
+          <Label htmlFor={htmlFor} className="text-sm font-medium">{title}</Label>
+        ) : (
+          <p className="text-sm font-medium">{title}</p>
+        )}
+        {description && <p className="text-sm text-muted-foreground">{description}</p>}
       </div>
-
-      {enabled && (
-        <div
-          id={contentId}
-          role="region"
-          aria-labelledby={labelId}
-          className="space-y-6 border-t border-border/70 bg-muted/10 p-4 animate-in fade-in slide-in-from-top-1 duration-200 sm:p-5"
-        >
-          {children}
-        </div>
-      )}
-    </Card>
+      {children}
+    </div>
   );
 }

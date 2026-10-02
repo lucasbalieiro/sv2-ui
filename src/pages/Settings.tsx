@@ -136,7 +136,7 @@ export function Settings() {
         </div>
 
         <Tabs defaultValue="configuration" value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5 lg:w-[750px]">
+          <TabsList className="flex w-full justify-start overflow-x-auto [&>button]:shrink-0 sm:grid sm:grid-cols-5 lg:w-[750px]">
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
