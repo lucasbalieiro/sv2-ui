@@ -150,8 +150,7 @@ export function ExperimentalTab() {
       <div className="space-y-1">
         <h3 className="text-xl font-semibold tracking-tight">Experiments</h3>
         <p className="text-sm text-muted-foreground">
-          These features are functional but still being refined. Enable them to try new
-          capabilities early.
+          Early features that are still being refined. Opt in to try them.
         </p>
       </div>
 
@@ -159,26 +158,28 @@ export function ExperimentalTab() {
         <ExperimentToggleCard
           id="telegram-experiment"
           title="Telegram activity updates"
-          description="Mining alerts and periodic updates in a private Telegram chat."
           enabled={telegramExperimentOpen}
           disabled={isPending}
           onEnabledChange={handleTelegramExperimentChange}
         >
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
-            <p className="font-medium text-foreground">Proof-of-concept flow</p>
-            <p className="mt-1 text-muted-foreground">
-              Create a dedicated bot with{' '}
-              <a
-                href="https://t.me/BotFather"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-primary hover:underline"
-              >
-                @BotFather
-              </a>
-              , enter its token here, then press Start in the private bot chat on Telegram.
-            </p>
-          </div>
+          {!settings.paired && (
+            <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+              <li>
+                Create a bot with{' '}
+                <a
+                  href="https://t.me/BotFather"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  @BotFather
+                </a>{' '}
+                and copy its token.
+              </li>
+              <li>Paste the token below and connect.</li>
+              <li>Open the bot in Telegram, press Start, then check pairing.</li>
+            </ol>
+          )}
 
           {!settings.connected && (
             <div className="space-y-4">
@@ -193,8 +194,7 @@ export function ExperimentalTab() {
                   placeholder="Paste the token from @BotFather"
                 />
                 <p className="text-xs text-muted-foreground">
-                  The token controls the bot. SV2 UI stores it only in the local config volume with
-                  owner-only file permissions and never returns it to the browser.
+                  Stored only on your SV2 UI server. Use a bot made just for SV2 UI.
                 </p>
               </div>
 
@@ -207,7 +207,7 @@ export function ExperimentalTab() {
                 ) : (
                   <Bot className="mr-2 h-4 w-4" />
                 )}
-                Verify bot
+                Connect bot
               </Button>
             </div>
           )}
@@ -220,8 +220,7 @@ export function ExperimentalTab() {
                   {settings.botName} · @{settings.botUsername}
                 </div>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Open the one-time link, press Start in Telegram, then come back and check the
-                  pairing. This links only that private chat.
+                  Open Telegram, press Start, then check pairing.
                 </p>
               </div>
 
@@ -261,8 +260,8 @@ export function ExperimentalTab() {
                 <div className="min-w-0">
                   <p className="font-medium">Paired with {settings.recipient}</p>
                   <p className="text-sm text-muted-foreground">
-                    @{settings.botUsername} sends updates from this local SV2 UI backend. Send{' '}
-                    <span className="font-mono">/settings</span> to configure these alerts in Telegram.
+                    Alerts come from @{settings.botUsername}. Send{' '}
+                    <span className="font-mono">/settings</span> to it to change them from Telegram.
                   </p>
                 </div>
                 <Button
@@ -281,12 +280,7 @@ export function ExperimentalTab() {
 
               <div className="space-y-5">
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-block-found">Block found</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify immediately when a channel&apos;s block counter increases.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-block-found">Block found</Label>
                   <Switch
                     id="telegram-block-found"
                     checked={settings.notifyOnBlockFound}
@@ -299,12 +293,7 @@ export function ExperimentalTab() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-best-difficulty">New best difficulty</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify when an existing miner channel sets a higher best share difficulty.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-best-difficulty">New best difficulty</Label>
                   <Switch
                     id="telegram-best-difficulty"
                     checked={settings.notifyOnBestDifficulty}
@@ -317,12 +306,7 @@ export function ExperimentalTab() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-pool-change">Pool failover</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify when mining moves from one configured pool to another.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-pool-change">Pool failover</Label>
                   <Switch
                     id="telegram-pool-change"
                     checked={settings.notifyOnPoolChange}
@@ -335,12 +319,7 @@ export function ExperimentalTab() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-status-changes">Mining start and stop</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify when the local mining stack starts or stops.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-status-changes">Mining start and stop</Label>
                   <Switch
                     id="telegram-status-changes"
                     checked={settings.notifyOnStatusChange}
@@ -353,12 +332,7 @@ export function ExperimentalTab() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-worker-changes">Worker changes</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify when the monitored worker count increases or decreases.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-worker-changes">Worker changes</Label>
                   <Switch
                     id="telegram-worker-changes"
                     checked={settings.notifyOnWorkerChange}
@@ -371,12 +345,7 @@ export function ExperimentalTab() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Label htmlFor="telegram-rejected-shares">Rejected shares</Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Notify when the upstream rejected-share counter increases.
-                    </p>
-                  </div>
+                  <Label htmlFor="telegram-rejected-shares">Rejected shares</Label>
                   <Switch
                     id="telegram-rejected-shares"
                     checked={settings.notifyOnRejectedShares}
@@ -457,7 +426,7 @@ function ExperimentToggleCard({
 }: {
   id: string;
   title: string;
-  description: string;
+  description?: string;
   enabled: boolean;
   disabled?: boolean;
   onEnabledChange: (enabled: boolean) => void;
@@ -476,7 +445,9 @@ function ExperimentToggleCard({
           <label id={labelId} htmlFor={switchId} className="font-medium text-foreground">
             {title}
           </label>
-          <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
+          {description && (
+            <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
+          )}
         </div>
         <Switch
           id={switchId}

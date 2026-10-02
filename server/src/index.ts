@@ -667,7 +667,7 @@ function sendTelegramError(res: express.Response, error: unknown): void {
 }
 
 /**
- * Telegram notification proof of concept.
+ * Telegram notifications.
  *
  * The bot token and chat ID are stored only in CONFIG_DIR/telegram.json and
  * are never included in an API response.
