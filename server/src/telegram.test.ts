@@ -7,6 +7,7 @@ import test, { type TestContext } from 'node:test';
 import {
   collectPaginatedMonitoringItems,
   formatTelegramStatus,
+  formatPoolName,
   formatWorkerName,
   mapWithConcurrency,
   getTelegramWorkerCount,
@@ -453,7 +454,6 @@ test('never forwards a Telegram 401 or 404 as an auth failure of this API', () =
 
   assert.equal(toTelegramApiError(409, 'Conflict').statusCode, 409);
   assert.equal(toTelegramApiError(429, 'Too Many Requests').statusCode, 429);
-  assert.equal(toTelegramApiError(400, 'Bad Request: chat not found').message, 'chat not found');
   assert.equal(toTelegramApiError(500, undefined).statusCode, 502);
 });
 
@@ -754,7 +754,7 @@ test('a rejected alert is dropped and does not block later alerts', async (t) =>
 
   // A transient failure keeps the alert queued and sends it exactly once later.
   failNextSendTransiently = true;
-  await assert.rejects(flaky.poll(async () => block(3)));
+  await flaky.poll(async () => block(3));
   await flaky.poll(async () => block(3));
   const texts = telegram.callsFor('sendMessage').map((call) => String(call.body.text));
   assert.equal(texts.filter((text) => /Channel total: 3/.test(text)).length, 1);
@@ -798,4 +798,147 @@ test('rejects a malformed bot token before calling Telegram', async (t) => {
 
   await assert.rejects(service.connectBot('123/../../evil'), TelegramConfigError);
   assert.equal(telegram.calls.length, 0);
+});
+
+test('shows fixed messages for Telegram errors and keeps the detail for logs only', () => {
+  const rejected = toTelegramApiError(400, 'Bad Request: message is too long\n<b>x</b>');
+  assert.equal(rejected.statusCode, 400);
+  assert.equal(rejected.message, 'Telegram rejected the request.');
+  assert.equal(rejected.detail, 'Bad Request: message is too long <b>x</b>');
+
+  // A blocked bot cannot be fixed by retrying, so it is not a transient error.
+  const blocked = toTelegramApiError(403, 'Forbidden: bot was blocked by the user');
+  assert.equal(blocked.statusCode, 400);
+  assert.match(blocked.message, /Unblock the bot/);
+
+  const upstream = toTelegramApiError(502, 'Bad Gateway');
+  assert.equal(upstream.statusCode, 502);
+  assert.doesNotMatch(upstream.message, /Bad Gateway/);
+});
+
+test('shares one item budget across every paginated monitoring read', async () => {
+  const budget = { remainingItems: 250 };
+  const fullPages = async () => ({ total: 1_000, items: Array.from({ length: 100 }, () => 1) });
+
+  const first = await collectPaginatedMonitoringItems(
+    async () => ({ total: 100, items: Array.from({ length: 100 }, () => 1) }),
+    100,
+    5_000,
+    budget,
+  );
+  assert.equal(first?.length, 100);
+  assert.equal(budget.remainingItems, 150);
+
+  // Each read is under its own per-endpoint cap, but together they exceed the
+  // shared budget, so the second one gives up.
+  assert.equal(await collectPaginatedMonitoringItems(fullPages, 100, 5_000, budget), null);
+  assert.ok(budget.remainingItems < 0);
+});
+
+test('formats pool names on a single line', () => {
+  assert.equal(formatPoolName('Pool\nPool failover\nTo: evil'), 'Pool Pool failover To: evil');
+  assert.equal(formatPoolName('  '), 'Unnamed pool');
+  assert.equal(Array.from(formatPoolName('p'.repeat(200))).length, 64);
+});
+
+function failingTelegram(
+  telegram: ReturnType<typeof createTelegramFetch>,
+  failure: { current: null | { method: string; status: number; description: string } | 'network' },
+) {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const method = String(input).split('/').at(-1);
+    const current = failure.current;
+    if (current === 'network') throw new Error('network down');
+    if (current && (current.method === '*' || current.method === method)) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error_code: current.status,
+        description: current.description,
+      }), { status: current.status });
+    }
+    return telegram.fetchImplementation(input, init);
+  }) as typeof fetch;
+}
+
+test('a revoked token is shown in settings and retried with backoff', async (t) => {
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const { settingsFile } = await pairService(t, telegram);
+  const failure: Parameters<typeof failingTelegram>[1] = { current: null };
+  let now = 1_000_000;
+  const service = new TelegramService(settingsFile, failingTelegram(telegram, failure), {
+    now: () => now,
+  });
+  assert.equal((await service.getSettings()).deliveryError, null);
+
+  failure.current = { method: '*', status: 401, description: 'Unauthorized' };
+  await service.poll(async () => snapshot());
+  assert.match((await service.getSettings()).deliveryError ?? '', /rejected the bot token/);
+
+  // Backing off: no Telegram calls until the retry time.
+  const callsBefore = telegram.calls.length;
+  now += 60_000;
+  await service.poll(async () => snapshot());
+  assert.equal(telegram.calls.length, callsBefore);
+
+  // After the retry delay a working token clears the warning.
+  failure.current = null;
+  now += 5 * 60_000;
+  await service.poll(async () => snapshot());
+  assert.equal((await service.getSettings()).deliveryError, null);
+});
+
+test('a blocked bot is shown until a message gets through again', async (t) => {
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const { settingsFile } = await pairService(t, telegram);
+  const failure: Parameters<typeof failingTelegram>[1] = { current: null };
+  const service = new TelegramService(settingsFile, failingTelegram(telegram, failure));
+
+  failure.current = { method: 'sendMessage', status: 403, description: 'Forbidden: bot was blocked by the user' };
+  await assert.rejects(service.sendTestMessage());
+  assert.match((await service.getSettings()).deliveryError ?? '', /Unblock the bot/);
+
+  // Reading updates still works while blocked, but does not clear the warning.
+  await service.poll(async () => snapshot());
+  assert.match((await service.getSettings()).deliveryError ?? '', /Unblock the bot/);
+
+  failure.current = null;
+  await service.sendTestMessage();
+  assert.equal((await service.getSettings()).deliveryError, null);
+});
+
+test('a brief network outage is not reported, a long one is', async (t) => {
+  const telegram = createTelegramFetch({ getMe: [BOT] });
+  const { settingsFile } = await pairService(t, telegram);
+  const failure: Parameters<typeof failingTelegram>[1] = { current: 'network' };
+  let now = 1_000_000;
+  const service = new TelegramService(settingsFile, failingTelegram(telegram, failure), {
+    now: () => now,
+  });
+
+  await service.poll(async () => snapshot());
+  assert.equal((await service.getSettings()).deliveryError, null);
+
+  now += 3 * 60_000;
+  await service.poll(async () => snapshot());
+  assert.match((await service.getSettings()).deliveryError ?? '', /cannot reach Telegram/);
+
+  failure.current = null;
+  await service.poll(async () => snapshot());
+  assert.equal((await service.getSettings()).deliveryError, null);
+});
+
+test('rejects null and mistyped settings instead of ignoring them', async (t) => {
+  const { service } = await pairService(t);
+
+  await assert.rejects(
+    service.updateSettings({ notifyOnBlockFound: null } as never),
+    TelegramConfigError,
+  );
+  await assert.rejects(
+    service.updateSettings({ summaryIntervalMinutes: null } as never),
+    TelegramConfigError,
+  );
+  // Unknown keys are still ignored.
+  await service.updateSettings({ notifyOnWorkerChange: true, chatId: 1 } as never);
+  assert.equal((await service.getSettings()).notifyOnWorkerChange, true);
 });

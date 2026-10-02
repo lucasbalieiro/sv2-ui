@@ -272,14 +272,23 @@ export function ExperimentalTab() {
 
             {settings.paired && (
               <>
-                <Alert variant="success">
+                <Alert variant={settings.deliveryError ? 'warning' : 'success'}>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
-                      <p className="font-medium">Paired with {settings.recipient}</p>
-                      <p className="text-muted-foreground">
-                        Alerts come from @{settings.botUsername}. Send{' '}
-                        <span className="font-mono">/settings</span> to it to change them from Telegram.
-                      </p>
+                      {settings.deliveryError ? (
+                        <>
+                          <p className="font-medium">Alerts are not being delivered</p>
+                          <p className="text-muted-foreground">{settings.deliveryError}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-medium">Paired with {settings.recipient}</p>
+                          <p className="text-muted-foreground">
+                            Alerts come from @{settings.botUsername}. Send{' '}
+                            <span className="font-mono">/settings</span> to it to change them from Telegram.
+                          </p>
+                        </>
+                      )}
                     </div>
                     <Button
                       variant="outline"

@@ -8,6 +8,8 @@ export type TelegramSettings = {
   botName: string | null;
   recipient: string | null;
   pairingUrl: string | null;
+  /** Why alerts are currently not reaching Telegram, or null when healthy. */
+  deliveryError: string | null;
   enabled: boolean;
   notifyOnBlockFound: boolean;
   notifyOnBestDifficulty: boolean;

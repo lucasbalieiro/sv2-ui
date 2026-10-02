@@ -11,6 +11,7 @@ const MAX_TELEGRAM_MESSAGE_LENGTH = 4096;
 // Alerts waiting to be delivered (e.g. while Telegram is unreachable).
 const MAX_PENDING_MESSAGES = 20;
 const MAX_WORKER_NAME_LENGTH = 64;
+const MAX_POOL_NAME_LENGTH = 64;
 // getUpdates returns at most 100 updates; even with long messages a response
 // stays well below this.
 const MAX_TELEGRAM_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -109,6 +110,11 @@ export type TelegramSettings = TelegramAlertSettings & {
   botName: string | null;
   recipient: string | null;
   pairingUrl: string | null;
+  /**
+   * Set when alerts are currently not reaching Telegram (revoked token, bot
+   * blocked, Telegram unreachable for a while). Null when delivery is healthy.
+   */
+  deliveryError: string | null;
 };
 
 export type TelegramSettingsUpdate = Partial<TelegramAlertSettings>;
@@ -152,10 +158,17 @@ type MonitoringPage<T> = {
  * stops on a short or empty page, and gives up (returns null, i.e. "unknown")
  * once more than `maxItems` items have been seen.
  */
+/**
+ * Item allowance shared by every paginated read of one activity snapshot, so
+ * the per-endpoint cap cannot be multiplied by the number of JD clients.
+ */
+export type MonitoringBudget = { remainingItems: number };
+
 export async function collectPaginatedMonitoringItems<T>(
   fetchPage: (offset: number, limit: number) => Promise<MonitoringPage<T> | null>,
   pageSize = 100,
   maxItems = MAX_MONITORING_ITEMS,
+  budget?: MonitoringBudget,
 ): Promise<T[] | null> {
   if (!Number.isInteger(pageSize) || pageSize <= 0) {
     throw new RangeError('Monitoring page size must be a positive integer');
@@ -177,6 +190,10 @@ export async function collectPaginatedMonitoringItems<T>(
 
     items.push(...page.items);
     if (items.length > maxItems) return null;
+    if (budget) {
+      budget.remainingItems -= page.items.length;
+      if (budget.remainingItems < 0) return null;
+    }
 
     if (
       page.items.length === 0 ||
@@ -220,16 +237,27 @@ export async function mapWithConcurrency<T, R>(
  * a crafted name cannot fake extra lines of an alert, and cap the length.
  */
 export function formatWorkerName(name: string): string {
-  const cleaned = name
+  return toSingleLine(name, MAX_WORKER_NAME_LENGTH) || 'unnamed';
+}
+
+/**
+ * Pool names come from the operator's own configuration, so they are trusted,
+ * but they get the same single-line treatment for consistency.
+ */
+export function formatPoolName(name: string): string {
+  return toSingleLine(name, MAX_POOL_NAME_LENGTH) || 'Unnamed pool';
+}
+
+function toSingleLine(text: string, maxLength: number): string {
+  const cleaned = text
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (!cleaned) return 'unnamed';
   const characters = Array.from(cleaned);
-  return characters.length > MAX_WORKER_NAME_LENGTH
-    ? `${characters.slice(0, MAX_WORKER_NAME_LENGTH - 1).join('')}…`
+  return characters.length > maxLength
+    ? `${characters.slice(0, maxLength - 1).join('')}…`
     : cleaned;
 }
 
@@ -257,10 +285,25 @@ export class TelegramConfigError extends Error {}
  * "session expired" to the UI, so an upstream 401 (revoked bot token) must not
  * be forwarded as-is.
  */
+export type TelegramFailureReason =
+  | 'invalid-token'
+  | 'conflict'
+  | 'blocked'
+  | 'rate-limited'
+  | 'rejected'
+  | 'upstream'
+  | 'unreachable';
+
 export class TelegramApiError extends Error {
   constructor(
     message: string,
-    readonly statusCode: 400 | 409 | 429 | 502
+    readonly statusCode: 400 | 409 | 429 | 502,
+    /**
+     * Telegram's own description, cleaned to a single short line. For server
+     * logs only; it is third-party text and is never sent to the browser.
+     */
+    readonly detail: string | null = null,
+    readonly reason: TelegramFailureReason = 'upstream',
   ) {
     super(message);
   }
@@ -275,6 +318,8 @@ export function toTelegramApiError(
     return new TelegramApiError(
       'Telegram rejected the bot token. Check it with @BotFather and connect the bot again.',
       400,
+      description ? toSingleLine(description, 200) || null : null,
+      'invalid-token',
     );
   }
 
@@ -283,20 +328,44 @@ export function toTelegramApiError(
     return new TelegramApiError(
       'This bot is already in use elsewhere (a webhook or another app is reading its updates). Use a dedicated bot for SV2 UI.',
       409,
+      description ? toSingleLine(description, 200) || null : null,
+      'conflict',
     );
   }
 
+  const detail = description ? toSingleLine(description, 200) || null : null;
+
   if (upstreamStatus === 429) {
-    return new TelegramApiError('Telegram is rate limiting this bot. Try again shortly.', 429);
+    return new TelegramApiError('Telegram is rate limiting this bot. Try again shortly.', 429, detail, 'rate-limited');
   }
 
-  const detail = description?.replace(/^Bad Request:\s*/i, '');
-  if (upstreamStatus === 400 && detail) {
-    return new TelegramApiError(detail, 400);
+  // The user blocked the bot or deleted the chat. Retrying cannot help.
+  if (upstreamStatus === 403) {
+    return new TelegramApiError(
+      'Telegram refused to deliver the message. Unblock the bot or press Start in its chat.',
+      400,
+      detail,
+      'blocked',
+    );
   }
 
-  return new TelegramApiError(detail || 'Telegram rejected the request', 502);
+  // The request itself was invalid (for example a message Telegram will not
+  // accept). Use a fixed message rather than showing Telegram's text verbatim.
+  if (upstreamStatus === 400) {
+    return new TelegramApiError('Telegram rejected the request.', 400, detail, 'rejected');
+  }
+
+  return new TelegramApiError('Telegram returned an error. Try again shortly.', 502, detail);
 }
+
+const ALERT_SETTING_KEYS = [
+  'notifyOnBlockFound',
+  'notifyOnBestDifficulty',
+  'notifyOnPoolChange',
+  'notifyOnStatusChange',
+  'notifyOnWorkerChange',
+  'notifyOnRejectedShares',
+] as const;
 
 const DEFAULT_ALERT_SETTINGS: TelegramAlertSettings = {
   enabled: true,
@@ -317,15 +386,20 @@ function getEmptySettings(): TelegramSettings {
     botName: null,
     recipient: null,
     pairingUrl: null,
+    deliveryError: null,
     ...DEFAULT_ALERT_SETTINGS,
     enabled: false,
   };
 }
 
-function toPublicSettings(settings: SavedTelegramSettings | null): TelegramSettings {
+function toPublicSettings(
+  settings: SavedTelegramSettings | null,
+  deliveryError: string | null = null,
+): TelegramSettings {
   if (!settings) return getEmptySettings();
 
   return {
+    deliveryError,
     connected: true,
     paired: settings.chatId !== null,
     botUsername: settings.botUsername,
@@ -455,10 +529,10 @@ export function formatTelegramStatus(
 ): string {
   const lines = [
     heading,
-    `Status: ${snapshot.unavailable ? 'Unknown (Docker is unreachable)' : snapshot.running ? 'Running' : 'Stopped'}`,
+    `Status: ${snapshot.unavailable ? 'Unknown (mining status could not be read)' : snapshot.running ? 'Running' : 'Stopped'}`,
   ];
 
-  if (snapshot.poolName) lines.push(`Pool: ${snapshot.poolName}`);
+  if (snapshot.poolName) lines.push(`Pool: ${formatPoolName(snapshot.poolName)}`);
 
   const hashrate = formatHashrate(snapshot.hashrate);
   if (hashrate) lines.push(`Hashrate: ${hashrate}`);
@@ -546,7 +620,7 @@ function getBlockFoundMessages(
 
     const delta = channel.blocksFound - before.blocksFound;
     const lines = ['🎉 Block found!'];
-    if (current.poolName) lines.push(`Pool: ${current.poolName}`);
+    if (current.poolName) lines.push(`Pool: ${formatPoolName(current.poolName)}`);
     lines.push(`Worker: ${formatWorkerName(channel.userIdentity)}`);
     lines.push(
       delta === 1
@@ -578,7 +652,7 @@ function getBestDifficultyMessage(
   if (!improved) return null;
 
   const lines = ['🏆 New best difficulty!'];
-  if (current.poolName) lines.push(`Pool: ${current.poolName}`);
+  if (current.poolName) lines.push(`Pool: ${formatPoolName(current.poolName)}`);
   lines.push(`Worker: ${formatWorkerName(improved.userIdentity)}`);
   lines.push(`Difficulty: ${formatDifficulty(improved.bestDifficulty)}`);
   return lines.join('\n');
@@ -678,6 +752,28 @@ type TelegramServiceOptions = {
    * comparatively expensive Docker and monitoring API reads are throttled.
    */
   activityIntervalMs?: number;
+  /** Clock, injectable for tests. */
+  now?: () => number;
+};
+
+// After Telegram rejects the token or reports another app using the bot,
+// retry this rarely instead of every poll.
+const PERSISTENT_FAILURE_RETRY_MS = 5 * 60_000;
+// Brief network blips are normal; only report Telegram as unreachable when it
+// has been for this long.
+const UNREACHABLE_REPORT_AFTER_MS = 2 * 60_000;
+
+type DeliveryIssue = {
+  reason: TelegramFailureReason;
+  since: number;
+  retryAt: number | null;
+};
+
+const DELIVERY_ISSUE_LOG: Partial<Record<TelegramFailureReason, string>> = {
+  'invalid-token': 'Telegram rejected the bot token; alerts are paused until the bot is reconnected.',
+  conflict: 'Another app is reading this bot\'s updates; alerts are paused.',
+  blocked: 'Telegram refused to deliver alerts; the bot may be blocked in its chat.',
+  unreachable: 'Telegram is unreachable; alerts are queued and will be retried.',
 };
 
 export class TelegramService {
@@ -702,8 +798,10 @@ export class TelegramService {
   private outbox: string[] = [];
   /** getUpdates offset used while scanning for the pairing /start message. */
   private pairingOffset: number | null = null;
+  private deliveryIssue: DeliveryIssue | null = null;
   private pollInProgress = false;
   private readonly activityIntervalMs: number;
+  private readonly now: () => number;
 
   constructor(
     private readonly settingsFile: string,
@@ -711,6 +809,7 @@ export class TelegramService {
     options: TelegramServiceOptions = {},
   ) {
     this.activityIntervalMs = options.activityIntervalMs ?? 0;
+    this.now = options.now ?? Date.now;
   }
 
   async initialize(): Promise<void> {
@@ -740,7 +839,7 @@ export class TelegramService {
 
   async getSettings(): Promise<TelegramSettings> {
     await this.initialize();
-    return toPublicSettings(this.settings);
+    return this.publicSettings();
   }
 
   async connectBot(botToken: string): Promise<TelegramSettings> {
@@ -771,7 +870,7 @@ export class TelegramService {
       enabled: false,
     });
     await this.persist();
-    return toPublicSettings(this.settings);
+    return this.publicSettings();
   }
 
   async pairChat(): Promise<TelegramSettings> {
@@ -780,7 +879,7 @@ export class TelegramService {
     const generation = this.generation;
 
     if (settings.chatId !== null) {
-      return toPublicSettings(settings);
+      return this.publicSettings();
     }
     if (!settings.pairingCode) {
       throw new TelegramConfigError('Create a new Telegram pairing link first');
@@ -848,12 +947,26 @@ export class TelegramService {
       ...DEFAULT_ALERT_SETTINGS,
     });
     await this.persist();
-    return toPublicSettings(this.settings);
+    return this.publicSettings();
   }
 
   async updateSettings(update: TelegramSettingsUpdate): Promise<TelegramSettings> {
     await this.initialize();
     const settings = this.requirePaired();
+    // Every provided setting must have the right type; null is not
+    // "unchanged". Unknown keys are ignored (only known settings are copied).
+    const provided = update as Record<string, unknown>;
+    for (const key of [...ALERT_SETTING_KEYS, 'enabled'] as const) {
+      if (provided[key] !== undefined && typeof provided[key] !== 'boolean') {
+        throw new TelegramConfigError('Notification settings must be true or false');
+      }
+    }
+    if (
+      provided.summaryIntervalMinutes !== undefined &&
+      !Number.isInteger(provided.summaryIntervalMinutes)
+    ) {
+      throw new TelegramConfigError('Summary interval must be a whole number of minutes');
+    }
     const next = {
       ...settings,
       enabled: update.enabled ?? settings.enabled,
@@ -897,17 +1010,23 @@ export class TelegramService {
     this.settings = next;
     this.resetMonitorState();
     await this.persist();
-    return toPublicSettings(this.settings);
+    return this.publicSettings();
   }
 
   async sendTestMessage(): Promise<void> {
     await this.initialize();
     const settings = this.requirePaired();
-    await this.sendMessage(
-      settings.botToken,
-      settings.chatId,
-      '✅ SV2 UI Telegram notifications are working.'
-    );
+    try {
+      await this.sendMessage(
+        settings.botToken,
+        settings.chatId,
+        '✅ SV2 UI Telegram notifications are working.'
+      );
+      this.recordDeliverySuccess('send');
+    } catch (error) {
+      this.recordDeliveryFailure(error);
+      throw error;
+    }
   }
 
   async disconnect(): Promise<TelegramSettings> {
@@ -927,6 +1046,9 @@ export class TelegramService {
       this.resetMonitorState();
       return;
     }
+
+    const retryAt = this.deliveryIssue?.retryAt;
+    if (retryAt !== null && retryAt !== undefined && this.now() < retryAt) return;
 
     this.pollInProgress = true;
     const generation = this.generation;
@@ -954,7 +1076,7 @@ export class TelegramService {
       // Deliver alerts left over from an earlier poll first, oldest first.
       await this.flushOutbox(settings);
 
-      const now = Date.now();
+      const now = this.now();
       if (
         this.lastActivityCheckAt !== null &&
         now - this.lastActivityCheckAt < this.activityIntervalMs
@@ -1000,6 +1122,11 @@ export class TelegramService {
 
       this.enqueue(messages);
       await this.flushOutbox(settings);
+    } catch (error) {
+      // Telegram failures are tracked, shown in the UI and logged once per
+      // change. Anything else is unexpected and is left to the caller.
+      if (!(error instanceof TelegramApiError)) throw error;
+      if (this.generation === generation) this.recordDeliveryFailure(error);
     } finally {
       this.pollInProgress = false;
     }
@@ -1044,11 +1171,11 @@ export class TelegramService {
     ) {
       const duplicateName = this.lastKnownPool.name === currentPool.name;
       const previousLabel = duplicateName
-        ? `${this.lastKnownPool.name} (${formatPoolPriority(this.lastKnownPool.index)})`
-        : this.lastKnownPool.name;
+        ? `${formatPoolName(this.lastKnownPool.name)} (${formatPoolPriority(this.lastKnownPool.index)})`
+        : formatPoolName(this.lastKnownPool.name);
       const currentLabel = duplicateName
-        ? `${currentPool.name} (${formatPoolPriority(currentPool.index)})`
-        : currentPool.name;
+        ? `${formatPoolName(currentPool.name)} (${formatPoolPriority(currentPool.index)})`
+        : formatPoolName(currentPool.name);
       messages.push([
         '🔁 Pool failover',
         `From: ${previousLabel}`,
@@ -1110,11 +1237,19 @@ export class TelegramService {
       try {
         await this.sendMessage(settings.botToken, settings.chatId, text);
         this.outbox.shift();
+        this.recordDeliverySuccess('send');
       } catch (error) {
-        if (error instanceof TelegramApiError && error.statusCode === 400) {
-          console.warn(`Dropping a Telegram alert that Telegram rejected: ${error.message}`);
+        if (error instanceof TelegramApiError && error.reason === 'rejected') {
+          console.warn(
+            `Dropping a Telegram alert that Telegram rejected: ${error.detail ?? error.message}`
+          );
           this.outbox.shift();
           continue;
+        }
+        if (error instanceof TelegramApiError && error.reason === 'blocked') {
+          // Nothing can be delivered to this chat until the user unblocks the
+          // bot, so drop what is queued rather than retrying it forever.
+          this.outbox = [];
         }
         throw error;
       }
@@ -1136,6 +1271,7 @@ export class TelegramService {
         allowed_updates: ['message', 'callback_query'],
       }
     );
+    if (this.generation === generation) this.recordDeliverySuccess('updates');
     if (this.generation !== generation || !Array.isArray(updates) || updates.length === 0) {
       return;
     }
@@ -1281,6 +1417,68 @@ export class TelegramService {
     return settings as SavedTelegramSettings & { chatId: number };
   }
 
+  private publicSettings(): TelegramSettings {
+    return toPublicSettings(this.settings, this.describeDeliveryIssue());
+  }
+
+  private describeDeliveryIssue(): string | null {
+    const issue = this.deliveryIssue;
+    if (!issue || this.settings?.chatId === null || !this.settings) return null;
+
+    switch (issue.reason) {
+      case 'invalid-token':
+        return 'Telegram rejected the bot token, so alerts are not being delivered. Disconnect and connect the bot again.';
+      case 'conflict':
+        return 'Another app is using this bot, so alerts are not being delivered. Use a bot made just for SV2 UI.';
+      case 'blocked':
+        return 'Telegram refused to deliver alerts. Unblock the bot or press Start in its chat, then send a test.';
+      default:
+        return this.now() - issue.since >= UNREACHABLE_REPORT_AFTER_MS
+          ? 'SV2 UI cannot reach Telegram, so alerts are delayed. Check this server\'s internet connection.'
+          : null;
+    }
+  }
+
+  private recordDeliveryFailure(error: unknown): void {
+    if (!(error instanceof TelegramApiError) || error.reason === 'rejected') return;
+
+    const now = this.now();
+    const previous = this.deliveryIssue;
+    const reason: TelegramFailureReason =
+      error.reason === 'invalid-token' || error.reason === 'conflict' || error.reason === 'blocked'
+        ? error.reason
+        : 'unreachable';
+
+    // A temporary failure does not hide a known persistent one.
+    if (reason === 'unreachable' && previous && previous.reason !== 'unreachable') return;
+
+    this.deliveryIssue = {
+      reason,
+      since: previous?.reason === reason ? previous.since : now,
+      retryAt: reason === 'invalid-token' || reason === 'conflict'
+        ? now + PERSISTENT_FAILURE_RETRY_MS
+        : null,
+    };
+    if (previous?.reason !== reason) {
+      const message = DELIVERY_ISSUE_LOG[reason];
+      if (message) console.warn(message);
+    }
+  }
+
+  /**
+   * `updates`: Telegram accepted the token (clears everything except a
+   * blocked chat, which only a successful send can clear). `send`: a message
+   * reached the chat, so delivery is healthy.
+   */
+  private recordDeliverySuccess(kind: 'updates' | 'send'): void {
+    const previous = this.deliveryIssue;
+    if (!previous) return;
+    if (kind === 'updates' && previous.reason === 'blocked') return;
+
+    this.deliveryIssue = null;
+    console.warn('Telegram alert delivery recovered.');
+  }
+
   private assertGeneration(generation: number): void {
     if (this.generation !== generation) {
       throw new TelegramConfigError('Telegram settings changed in the meantime. Try again.');
@@ -1290,6 +1488,7 @@ export class TelegramService {
   /** Swap the bot/chat identity and invalidate any in-flight work. */
   private replaceConnection(settings: SavedTelegramSettings | null): void {
     this.generation += 1;
+    this.deliveryIssue = null;
     this.settings = settings;
     this.pairingOffset = null;
     this.outbox = [];
@@ -1387,8 +1586,10 @@ export class TelegramService {
       );
     } catch {
       throw new TelegramApiError(
-        'Could not reach Telegram. Check this machine’s internet connection.',
-        502
+        'Could not reach Telegram. Check this server’s internet connection.',
+        502,
+        null,
+        'unreachable',
       );
     }
 

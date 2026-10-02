@@ -64,6 +64,7 @@ import {
 } from './sessions.js';
 import { readJsonWithLimit } from './bounded-json.js';
 import {
+  MAX_MONITORING_ITEMS,
   collectPaginatedMonitoringItems,
   getTelegramWorkerCount,
   mapWithConcurrency,
@@ -72,6 +73,7 @@ import {
   TelegramService,
 } from './telegram.js';
 import type {
+  MonitoringBudget,
   TelegramActivitySnapshot,
   TelegramMiningChannel,
   TelegramSettingsUpdate,
@@ -1117,12 +1119,26 @@ const MAX_MONITORING_RESPONSE_BYTES = 1024 * 1024;
 // JD mode reads channels per downstream client. Anyone who can reach the JDC
 // can open connections, so bound both the fan-out and the parallelism.
 const MAX_TELEGRAM_MONITORED_CLIENTS = 200;
+// Bounds for one whole activity snapshot, across every monitoring request it
+// makes: total items read, and total time. Hitting either skips the round.
+const TELEGRAM_SNAPSHOT_MAX_ITEMS = MAX_MONITORING_ITEMS;
+const TELEGRAM_SNAPSHOT_TIMEOUT_MS = 20_000;
 const TELEGRAM_MONITORING_CONCURRENCY = 4;
 
-async function fetchMonitoringJson<T>(url: string): Promise<T | null> {
+/** Shared limits for every monitoring request made by one snapshot. */
+type MonitoringReadContext = {
+  signal: AbortSignal;
+  budget: MonitoringBudget;
+};
+
+async function fetchMonitoringJson<T>(
+  url: string,
+  context: MonitoringReadContext,
+): Promise<T | null> {
+  if (context.signal.aborted || context.budget.remainingItems < 0) return null;
   try {
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.any([AbortSignal.timeout(5000), context.signal]),
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -1165,22 +1181,28 @@ function combineMonitoringChannelPage<T>(
 
 async function fetchAllMonitoringChannels<T>(
   endpoint: string,
+  context: MonitoringReadContext,
 ): Promise<TaggedMonitoringChannel<T>[] | null> {
   return collectPaginatedMonitoringItems(async (offset, limit) => {
     const page = await fetchMonitoringJson<MonitoringChannelsPage<T>>(
-      `${endpoint}?offset=${offset}&limit=${limit}`
+      `${endpoint}?offset=${offset}&limit=${limit}`,
+      context,
     );
     return page ? combineMonitoringChannelPage(page) : null;
-  });
+  }, undefined, undefined, context.budget);
 }
 
-async function fetchAllMonitoringItems<T>(endpoint: string): Promise<T[] | null> {
+async function fetchAllMonitoringItems<T>(
+  endpoint: string,
+  context: MonitoringReadContext,
+): Promise<T[] | null> {
   return collectPaginatedMonitoringItems(async (offset, limit) => {
     const page = await fetchMonitoringJson<MonitoringItemsPage<T>>(
-      `${endpoint}?offset=${offset}&limit=${limit}`
+      `${endpoint}?offset=${offset}&limit=${limit}`,
+      context,
     );
     return isJsonObject(page) ? { items: page.items, total: page.total } : null;
-  });
+  }, undefined, undefined, context.budget);
 }
 
 function toTelegramMiningChannel(
@@ -1243,11 +1265,15 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
   const containerName = isJdMode ? 'sv2-jdc' : 'sv2-translator';
   const port = isJdMode ? JDC_MONITORING_PORT : TRANSLATOR_MONITORING_PORT;
   const baseUrl = `${getContainerUrl(containerName, port)}/api/v1`;
+  const context: MonitoringReadContext = {
+    signal: AbortSignal.timeout(TELEGRAM_SNAPSHOT_TIMEOUT_MS),
+    budget: { remainingItems: TELEGRAM_SNAPSHOT_MAX_ITEMS },
+  };
   const [global, serverChannels, monitoringClients] = await Promise.all([
-    fetchMonitoringJson<MonitoringGlobal>(`${baseUrl}/global`),
-    fetchAllMonitoringChannels<MonitoringServerChannel>(`${baseUrl}/server/channels`),
+    fetchMonitoringJson<MonitoringGlobal>(`${baseUrl}/global`, context),
+    fetchAllMonitoringChannels<MonitoringServerChannel>(`${baseUrl}/server/channels`, context),
     isJdMode
-      ? fetchAllMonitoringItems<MonitoringClient>(`${baseUrl}/clients`)
+      ? fetchAllMonitoringItems<MonitoringClient>(`${baseUrl}/clients`, context)
       : Promise.resolve(null),
   ]);
 
@@ -1270,7 +1296,8 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
       async (client) => ({
         clientId: client.client_id,
         channels: await fetchAllMonitoringChannels<MonitoringMiningChannel>(
-          `${baseUrl}/clients/${client.client_id}/channels`
+          `${baseUrl}/clients/${client.client_id}/channels`,
+          context,
         ),
       }),
     );
@@ -1287,6 +1314,24 @@ async function getTelegramActivitySnapshot(): Promise<TelegramActivitySnapshot> 
     miningChannels = serverChannels.flatMap(({ kind, channel }) => (
       toTelegramMiningChannel('translator:server', kind, channel) ?? []
     ));
+  }
+
+  // A snapshot that ran out of time or items is incomplete. Report it as
+  // unknown so the round is skipped instead of comparing partial data.
+  if (context.signal.aborted || context.budget.remainingItems < 0) {
+    console.warn('Telegram activity check skipped: monitoring data exceeded the time or size limit.');
+    return {
+      unavailable: true,
+      running: true,
+      poolName: status.poolName,
+      activePoolIndex: status.activePoolIndex,
+      hashrate: null,
+      workers: null,
+      sharesSubmitted: null,
+      sharesAccepted: null,
+      sharesRejected: null,
+      channels: null,
+    };
   }
 
   return {
