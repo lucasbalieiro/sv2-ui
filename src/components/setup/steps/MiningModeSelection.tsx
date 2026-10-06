@@ -46,14 +46,8 @@ export function MiningModeSelection({ data, updateData, onNext }: StepProps) {
   };
 
   const selectMode = (mode: SetupMode) => {
-    const isSovereignSolo = isSoloMode && mode === 'jd';
-    updateData({
-      mode,
-      pool: isSovereignSolo ? null : data.pool,
-      fallbackPools: isSovereignSolo ? [] : data.fallbackPools,
-      bitcoin: mode === 'jd' ? data.bitcoin : null,
-      jdc: mode === 'jd' ? data.jdc : null,
-    });
+    if (mode === data.mode) return;
+    updateData({ mode, pool: null, fallbackPools: [], bitcoin: null, jdc: null });
   };
 
   return (
@@ -113,7 +107,7 @@ export function MiningModeSelection({ data, updateData, onNext }: StepProps) {
         <button
           type="button"
           onClick={onNext}
-          disabled={!data.mode}
+          disabled={!data.miningMode || !data.mode}
           className="h-11 px-10 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 transition-colors font-medium"
         >
           Continue

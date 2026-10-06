@@ -40,7 +40,7 @@ async function postPassword(path: string, password: string): Promise<PasswordRes
   });
   const data = (await response.json().catch(() => ({}))) as PasswordResponse;
   if (!response.ok || data.success === false) {
-    throw new Error(data.error || `Request failed (${response.status})`);
+    throw Object.assign(new Error(data.error || `Request failed (${response.status})`), { status: response.status });
   }
   return data;
 }
@@ -85,10 +85,11 @@ export function useAuth() {
       invalidate();
       return data.recoveryKey;
     },
-    // Someone else may have set the password first; re-read the state so the
-    // gate switches to login instead of leaving this form stuck.
-    onError: () => {
-      queryClient.refetchQueries({ queryKey: AUTH_QUERY_KEY });
+    // 409: the password was set elsewhere first, so switch to login.
+    onError: (error) => {
+      if ((error as { status?: number }).status === 409) {
+        queryClient.refetchQueries({ queryKey: AUTH_QUERY_KEY });
+      }
     },
   });
 

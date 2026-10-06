@@ -201,6 +201,9 @@ test('auth state reports needsSetup only until a password exists', async () => {
   try {
     assert.equal(await needsSetup(), true);
 
+    await writeFile(stateFile, JSON.stringify({ configured: false }));
+    assert.equal(await needsSetup(), true);
+
     await writeFile(stateFile, JSON.stringify({
       configured: true,
       shouldBeRunning: false,

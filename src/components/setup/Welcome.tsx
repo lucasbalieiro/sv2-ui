@@ -44,6 +44,8 @@ export function Welcome({ onStart }: { onStart: () => void }) {
         className="relative z-10 w-full max-w-[440px] flex flex-col items-center gap-5 mt-3 animate-fade-in-up"
         style={{
           animationDelay: '0.08s',
+          // Holding the last frame would override the fade-out below
+          animationFillMode: 'backwards',
           opacity: isArming ? 0 : undefined,
           transition: isArming ? 'opacity 0.5s ease' : undefined,
         }}
