@@ -192,3 +192,34 @@ test('login is rate limited after repeated failures', async () => {
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+test('auth state reports needsSetup only until a password exists', async () => {
+  const { base, configDir, stop } = await startServer();
+  const stateFile = path.join(configDir, 'state.json');
+  const needsSetup = async () =>
+    ((await (await fetch(`${base}/api/auth/state`)).json()) as { needsSetup?: boolean }).needsSetup;
+  try {
+    assert.equal(await needsSetup(), true);
+
+    await writeFile(stateFile, JSON.stringify({
+      configured: true,
+      shouldBeRunning: false,
+      data: { miningMode: 'pool', mode: 'no-jd', pool: null, fallbackPools: [], bitcoin: null, jdc: null, translator: null },
+    }));
+    assert.equal(await needsSetup(), false);
+
+    await writeFile(stateFile, '{ not json');
+    assert.equal(await needsSetup(), false);
+
+    const setup = await fetch(`${base}/api/auth/setup-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'sup3rsecret' }),
+    });
+    assert.equal(setup.status, 200);
+    assert.equal(await needsSetup(), undefined);
+  } finally {
+    stop();
+    await rm(configDir, { recursive: true, force: true });
+  }
+});

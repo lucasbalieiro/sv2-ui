@@ -6,6 +6,7 @@ export interface AuthState {
   passwordSet: boolean;
   authenticated: boolean;
   recoveryKeySet: boolean;
+  needsSetup: boolean;
 }
 
 export const AUTH_QUERY_KEY = ['auth-state'] as const;
@@ -20,6 +21,7 @@ async function fetchAuthState(): Promise<AuthState> {
     passwordSet: data.passwordSet,
     authenticated: data.authenticated,
     recoveryKeySet: data.recoveryKeySet ?? false,
+    needsSetup: data.needsSetup ?? false,
   };
 }
 
@@ -82,6 +84,11 @@ export function useAuth() {
       const data = await postPassword('/api/auth/setup-password', password);
       invalidate();
       return data.recoveryKey;
+    },
+    // Someone else may have set the password first; re-read the state so the
+    // gate switches to login instead of leaving this form stuck.
+    onError: () => {
+      queryClient.refetchQueries({ queryKey: AUTH_QUERY_KEY });
     },
   });
 
@@ -147,6 +154,7 @@ export function useAuth() {
     passwordSet: query.data?.passwordSet ?? false,
     authenticated: query.data?.authenticated ?? false,
     recoveryKeySet: query.data?.recoveryKeySet ?? false,
+    needsSetup: query.data?.needsSetup ?? false,
     login,
     createPassword,
     logout,

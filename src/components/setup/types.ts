@@ -14,7 +14,6 @@ export const initialSetupData: SetupData = {
 
 export type SetupStep =
   | 'mining-mode'
-  | 'template-mode'
   | 'pool'
   | 'bitcoin-prereq'
   | 'bitcoin'
