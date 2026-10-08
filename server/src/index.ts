@@ -272,7 +272,7 @@ function recordAutoStartFailure(error: unknown): void {
 
 /**
  * GET /api/auth/state - Whether a password exists and whether this client is
- * authenticated. Deliberately leaks nothing beyond those two booleans.
+ * authenticated. Deliberately leaks nothing beyond these flags.
  */
 app.get('/api/auth/state', async (req, res) => {
   try {
@@ -281,6 +281,11 @@ app.get('/api/auth/state', async (req, res) => {
       passwordSet: credential !== null,
       authenticated: sessions.isValid(getSessionToken(req)),
       recoveryKeySet: credential?.recoveryKey !== undefined,
+      // Only sent until a password exists. An unreadable state file reads as
+      // false instead of failing the request.
+      needsSetup: credential
+        ? undefined
+        : await loadState().then((state) => !state.configured, () => false),
     });
   } catch (error) {
     if (error instanceof CredentialError) {
