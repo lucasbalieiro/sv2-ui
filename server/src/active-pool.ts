@@ -127,11 +127,24 @@ function getConfigKey(container: LogContainerRole, pools: PoolConfig[]): string 
  */
 export class ActivePoolTracker {
   private state: TrackerState | null = null;
+  // Concurrent calls for the same configuration share one log read: the
+  // first caller stores its promise here and later callers join it. This
+  // prevents parallel full-history reads (no matching state yet) from
+  // piling up Docker log work on every status poll.
+  private readonly inFlight = new Map<string, Promise<ActivePool | null>>();
+  // Bumped by every reset. A read that started before the reset must not
+  // publish its result: it would describe the previous run's containers and
+  // show a stale pool as active before the new one has connected.
+  private generation = 0;
 
   constructor(private readonly readLogs: ActivePoolLogProvider) {}
 
   reset(): void {
+    this.generation += 1;
     this.state = null;
+    // Drop pending reads so the next poll starts its own instead of joining
+    // one that began under the previous configuration.
+    this.inFlight.clear();
   }
 
   async getActivePool(
@@ -144,14 +157,45 @@ export class ActivePoolTracker {
     }
 
     const configKey = getConfigKey(container, pools);
+    const inFlight = this.inFlight.get(configKey);
+    if (inFlight) return inFlight;
+
+    const read = this.readActivePool(container, pools, configKey);
+    this.inFlight.set(configKey, read);
+
+    try {
+      return await read;
+    } finally {
+      // Identity-checked so a completed read never removes a newer
+      // in-flight entry; failures also clear the slot so the next poll
+      // can retry.
+      if (this.inFlight.get(configKey) === read) {
+        this.inFlight.delete(configKey);
+      }
+    }
+  }
+
+  private async readActivePool(
+    container: LogContainerRole,
+    pools: PoolConfig[],
+    configKey: string
+  ): Promise<ActivePool | null> {
     const previous = this.state?.configKey === configKey ? this.state : null;
     const readStartedAt = Math.floor(Date.now() / 1000);
+    const generation = this.generation;
 
     try {
       const lines = await this.readLogs(
         container,
         previous ? { since: previous.since } : undefined
       );
+
+      if (generation !== this.generation) {
+        // A reset landed while this read was in flight: its lines describe
+        // the previous run, so publish neither state nor a pool.
+        return null;
+      }
+
       const detected = detectActivePool(pools, lines, previous ?? undefined);
       const activeIndex = detected.activeIndex !== null && pools[detected.activeIndex]
         ? detected.activeIndex
@@ -171,6 +215,10 @@ export class ActivePoolTracker {
         ? null
         : { name: pools[activeIndex].name, index: activeIndex };
     } catch {
+      if (generation !== this.generation) {
+        return null;
+      }
+
       const activeIndex = previous?.activeIndex !== null &&
         previous?.activeIndex !== undefined &&
         pools[previous.activeIndex]
