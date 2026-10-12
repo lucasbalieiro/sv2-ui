@@ -6,6 +6,7 @@ import {
   jdcBitcoinCoreDisconnectedParser,
   jdcBitcoinCoreInitialBlockDownloadParser,
   jdcBitcoinCoreUnsupportedMiningInterfaceParser,
+  evaluateDiagnosisPolicy,
   getAutoRetryPolicy,
   logParsers,
 } from './parsers.js';
@@ -475,5 +476,100 @@ test('every registered parser declares an autoRetry policy', () => {
       policies.includes(parser.autoRetry),
       `${parser.code} has invalid autoRetry: ${parser.autoRetry}`
     );
+  }
+});
+
+test('evaluateDiagnosisPolicy: a clean log set proceeds without codes', () => {
+  assert.deepEqual(evaluateDiagnosisPolicy([SAMPLE_JDC_LINE('2026-05-14 00:00:00 UTC Starting')]), {
+    action: 'proceed',
+    codes: [],
+  });
+});
+
+test('evaluateDiagnosisPolicy: a never-policy diagnosis pauses with its codes', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(
+      'OpenMiningChannelError(request_id: 4521, error_code: unknown-user)'
+    ),
+  ];
+
+  assert.deepEqual(evaluateDiagnosisPolicy(lines), {
+    action: 'pause',
+    codes: ['unknown-user'],
+  });
+});
+
+test('evaluateDiagnosisPolicy: a slow diagnosis defers to the slow schedule', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(
+      'Failed Noise handshake with 75.119.150.111:3333: Invalid Certificate: SignatureNoiseMessage { version: 0, valid_from: 1776883236, not_valid_after: 1776886836, signature: ce3caec9 }. Retrying...'
+    ),
+  ];
+
+  assert.deepEqual(evaluateDiagnosisPolicy(lines), {
+    action: 'slow-retry',
+    codes: ['invalid-certificate'],
+  });
+});
+
+test('evaluateDiagnosisPolicy: a probe diagnosis proceeds so the caller can gate', () => {
+  const lines = [
+    SAMPLE_JDC_LINE(
+      'Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Disconnected, extra: "Peer disconnected" })'
+    ),
+  ];
+
+  assert.deepEqual(evaluateDiagnosisPolicy(lines), {
+    action: 'proceed',
+    codes: ['jdc-bitcoin-core-disconnected'],
+  });
+});
+
+test('evaluateDiagnosisPolicy: the most restrictive policy wins across codes', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE('Connection refused, retrying'),
+    SAMPLE_JDC_LINE(
+      'Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Disconnected, extra: "Peer disconnected" })'
+    ),
+    SAMPLE_TRANSLATOR_LINE(
+      'OpenMiningChannelError(request_id: 1, error_code: unknown-user)'
+    ),
+  ];
+
+  assert.deepEqual(evaluateDiagnosisPolicy(lines), {
+    action: 'pause',
+    codes: ['jdc-bitcoin-core-disconnected', 'unknown-user'],
+  });
+});
+
+test('evaluateDiagnosisPolicy: an unregistered code pauses', () => {
+  const fakeParser = {
+    code: 'future-unknown-scenario',
+    autoRetry: 'never' as const,
+    match: (lines: ContainerLogLine[]) =>
+      lines.some((line) => line.message.includes('future failure'))
+        ? {
+            code: 'unregistered-code',
+            severity: 'error' as const,
+            title: 't',
+            message: 'm',
+            recommendation: 'r',
+            streamId: 'mining-services' as const,
+            containers: ['translator' as const],
+            detectedAt: null,
+            evidence: [],
+          }
+        : null,
+  };
+  logParsers.push(fakeParser);
+  try {
+    const lines = [SAMPLE_TRANSLATOR_LINE('future failure detected')];
+
+    assert.deepEqual(evaluateDiagnosisPolicy(lines), {
+      action: 'pause',
+      codes: ['unregistered-code'],
+    });
+  } finally {
+    logParsers.splice(logParsers.indexOf(fakeParser), 1);
   }
 });

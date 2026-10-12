@@ -37,7 +37,8 @@ import type { SetupData, StatusResponse } from './types.js';
 import type { SavedState } from './state.js';
 import type { PreparedServiceConfig, ServiceConfigFile } from './service-config.js';
 import type { ContainerLogLine } from './logs/types.js';
-import { collectDiagnostics, getAutoRetryPolicy } from './logs/parsers.js';
+import { evaluateDiagnosisPolicy, SLOW_RETRY_MS } from './logs/parsers.js';
+import type { DiagnosisRetryDecision } from './logs/parsers.js';
 import { isOnlyTranslatorStopped, isStackRunning } from './stack-health.js';
 
 export const AUTO_START_MIN_BACKOFF_MS = 60_000;
@@ -49,9 +50,6 @@ export const AUTO_START_MAX_BACKOFF_MS = 5 * 60_000;
  * Two 30s ticks plus slack.
  */
 export const QUICK_EXIT_WINDOW_MS = 90_000;
-
-/** Minimum spacing between restarts for a self-healing ('slow') diagnosis. */
-export const SLOW_RETRY_MS = 10 * 60_000;
 
 type StackContainers = StatusResponse['containers'];
 
@@ -210,38 +208,22 @@ export class AutoStartReconciler {
    * Consult the diagnostics in the stopped containers' logs and return a
    * pause reason when auto-start must not restart, or null when it may.
    *
-   * - 'never' (and unknown codes): fatal and user-actionable, or simply
-   *   unrecognized. Stay paused until the user acts; a config change or
-   *   Start/Restart goes through the manual path and restarts with fresh
-   *   logs regardless of this decision.
-   * - 'slow': possibly self-healing (NTP clock sync). Allow a retry at
-   *   most once per SLOW_RETRY_MS.
-   * - 'probe': gated by an external precondition; fall through so the
-   *   start path's socket check decides.
+   * The decision itself comes from the shared evaluateDiagnosisPolicy so
+   * this loop and translator recovery cannot drift apart; the pacing state
+   * (log-once, slow-retry window) stays here.
    */
   private async evaluateStoppedStackDiagnostics(state: SavedState): Promise<string | null> {
-    let diagnostics;
+    let decision: DiagnosisRetryDecision;
     try {
-      diagnostics = collectDiagnostics(await this.deps.readStackLogs(state.mode));
+      decision = evaluateDiagnosisPolicy(await this.deps.readStackLogs(state.mode));
     } catch {
       // Log read failures are not a diagnosis. Proceeding is safe: the
       // start path already tolerates Docker hiccups via backoff.
       return null;
     }
 
-    if (diagnostics.length === 0) {
-      this.pauseLoggedFor = null;
-      return null;
-    }
-
-    const codes = diagnostics.map((diagnostic) => diagnostic.code);
-
-    const blocks = codes.some((code) => {
-      const policy = getAutoRetryPolicy(code);
-      return policy === null || policy === 'never';
-    });
-    if (blocks) {
-      const key = [...codes].sort().join(', ');
+    if (decision.action === 'pause') {
+      const key = decision.codes.join(', ');
       if (this.pauseLoggedFor !== key) {
         this.pauseLoggedFor = key;
         this.log().log(
@@ -253,17 +235,17 @@ export class AutoStartReconciler {
       return `diagnosed:${key}`;
     }
 
-    if (codes.some((code) => getAutoRetryPolicy(code) === 'slow')) {
+    if (decision.action === 'slow-retry') {
       if (this.now() < this.nextSlowRetryAt) return 'slow-retry-pending';
       this.nextSlowRetryAt = this.now() + SLOW_RETRY_MS;
       this.log().log(
-        `Auto-start: diagnosed failure (${codes.join(', ')}) may resolve on its own. ` +
+        `Auto-start: diagnosed failure (${decision.codes.join(', ')}) may resolve on its own. ` +
         `Retrying at most once every ${Math.round(SLOW_RETRY_MS / 60_000)} minutes.`,
       );
       return null;
     }
 
-    // Only 'probe' policies here: proceed and let the start path's
+    // No diagnosis or only 'probe' codes: proceed and let the start path's
     // precondition checks (Bitcoin Core socket) gate the restart.
     this.pauseLoggedFor = null;
     return null;

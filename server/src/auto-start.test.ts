@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AutoStartReconciler, QUICK_EXIT_WINDOW_MS, SLOW_RETRY_MS } from './auto-start.js';
+import { AutoStartReconciler, QUICK_EXIT_WINDOW_MS } from './auto-start.js';
+import { SLOW_RETRY_MS } from './logs/parsers.js';
 import type { AutoStartDeps } from './auto-start.js';
 import type { SavedState } from './state.js';
 import type { SetupData } from './types.js';

@@ -47,6 +47,8 @@ import {
 import { createMergedLogWriter } from './logs/merge.js';
 import { CONTAINER_LOG_EXPORT_MAX_BYTES } from './logs/export.js';
 import { getLogDiagnostics, getLogStreams, readCollatedLogLines } from './logs/diagnostics.js';
+import { evaluateDiagnosisPolicy } from './logs/parsers.js';
+import type { DiagnosisRetryDecision } from './logs/parsers.js';
 import { ActivePoolTracker } from './active-pool.js';
 import { isDegraded, isOnlyTranslatorStopped, isStackRunning } from './stack-health.js';
 import { AutoStartReconciler } from './auto-start.js';
@@ -1117,6 +1119,21 @@ async function recoverTranslator(): Promise<void> {
     const prepared = prepareServiceConfig(state.data, { logFailure: false });
     if (prepared.kind !== 'ready') return;
     if ((await getServiceConfigDrift(prepared.files, CONFIG_DIR)).length > 0) return;
+
+    // The Translator's logs decide whether another restart helps: a diagnosed
+    // failure would exit again with the same error, and each attempt removes
+    // the container, so Docker deletes the logs that explain it — blinking
+    // the banner while the evidence disappears. Read failures are not a
+    // diagnosis; restarting on them matches the auto-start reconciler.
+    let decision: DiagnosisRetryDecision;
+    try {
+      decision = evaluateDiagnosisPolicy(await readCollatedLogLines('jd'));
+    } catch {
+      decision = { action: 'proceed', codes: [] };
+    }
+    const gate = translatorRecovery.gateRestart(decision, Date.now());
+    if (gate.message) console.log(gate.message);
+    if (!gate.allowed) return;
 
     if (!beginStackOperation('translator-restart')) return;
     try {
