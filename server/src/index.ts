@@ -1142,7 +1142,7 @@ async function recoverTranslator(): Promise<void> {
       const translatorLines = (await readCollatedLogLines('jd')).filter(
         (line) => line.container === 'translator'
       );
-      decision = evaluateDiagnosisPolicy(translatorLines);
+      decision = evaluateDiagnosisPolicy(translatorLines, 'jd');
     } catch {
       decision = { action: 'proceed', codes: [] };
     }

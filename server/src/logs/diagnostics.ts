@@ -189,7 +189,7 @@ export async function getLogDiagnostics(
     mode,
     generatedAt: new Date().toISOString(),
     streams,
-    diagnostics: collectDiagnostics(lines),
+    diagnostics: collectDiagnostics(lines, mode),
     partial,
   };
 }

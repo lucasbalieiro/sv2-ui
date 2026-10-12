@@ -12,6 +12,35 @@ const SAMPLE_JDC_LINE: ContainerLogLine = {
   raw: '2026-04-14T12:00:00.000Z JDC started',
 };
 
+const TRANSLATOR_LINES: ContainerLogLine[] = [
+  {
+    container: 'translator',
+    stream: 'stderr',
+    timestamp: '2026-04-01T17:45:05.000Z',
+    message:
+      'INFO translator_sv2::sv2::upstream::common_message_handler: Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)',
+    raw: '2026-04-01T17:45:05.000Z INFO translator_sv2::sv2::upstream::common_message_handler: Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)',
+  },
+  {
+    container: 'translator',
+    stream: 'stderr',
+    timestamp: '2026-04-01T17:45:05.100Z',
+    message: 'ERROR translator_sv2::io_task: Reader error error=SocketClosed',
+    raw: '2026-04-01T17:45:05.100Z ERROR translator_sv2::io_task: Reader error error=SocketClosed',
+  },
+];
+
+test('scopes a no-JD-only diagnostic to no-JD mode', async () => {
+  const readLogs = async (container: LogContainerRole) =>
+    container === 'translator' ? TRANSLATOR_LINES : [];
+
+  const jd = await getLogDiagnostics('jd', true, readLogs);
+  assert.deepEqual(jd.diagnostics, []);
+
+  const noJd = await getLogDiagnostics('no-jd', true, readLogs);
+  assert.equal(noJd.diagnostics[0]?.code, 'upstream-closed-before-channel');
+});
+
 function createMissingContainerError(containerName: string): Error {
   const dockerError = Object.assign(new Error(`No such container: ${containerName}`), {
     statusCode: 404,

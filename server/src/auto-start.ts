@@ -212,7 +212,7 @@ export class AutoStartReconciler {
   private async evaluateStoppedStackDiagnostics(state: SavedState): Promise<string | null> {
     let decision: DiagnosisRetryDecision;
     try {
-      decision = evaluateDiagnosisPolicy(await this.deps.readStackLogs(state.mode));
+      decision = evaluateDiagnosisPolicy(await this.deps.readStackLogs(state.mode), state.mode);
     } catch {
       // Log read failures are not a diagnosis. Proceeding is safe: the
       // start path already tolerates Docker hiccups via backoff.

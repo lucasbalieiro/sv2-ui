@@ -1,4 +1,4 @@
-import type { LogContainerRole, LogOutputStream, LogSourceKind, LogStreamId, DiagnosticSeverity, ContainerLogLine, DiagnosticEvidence, LogDiagnostic, LogStreamDefinition, LogDiagnosticsResponse, ContainerLogsResponse } from '@sv2-ui/shared';
+import type { LogContainerRole, LogOutputStream, LogSourceKind, LogStreamId, DiagnosticSeverity, ContainerLogLine, DiagnosticEvidence, LogDiagnostic, LogStreamDefinition, LogDiagnosticsResponse, ContainerLogsResponse, SetupMode } from '@sv2-ui/shared';
 
 export type { LogContainerRole, LogOutputStream, LogSourceKind, LogStreamId, DiagnosticSeverity, ContainerLogLine, DiagnosticEvidence, LogDiagnostic, LogStreamDefinition, LogDiagnosticsResponse, ContainerLogsResponse };
 
@@ -12,6 +12,9 @@ export interface LogParser {
   // What the auto-start reconciler may do on its own while this scenario is
   // diagnosed on a stopped stack. See AutoRetryPolicy.
   autoRetry: AutoRetryPolicy;
+  // Setup modes whose logs can produce this diagnosis. Omitted means every
+  // mode: the scenario is not tied to whether JDC is in the stack.
+  modes?: SetupMode[];
 }
 
 /**

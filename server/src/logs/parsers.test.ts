@@ -412,6 +412,92 @@ test('invalidCertificateParser: detects InvalidCertificate in translator', () =>
   assert.ok(diagnostics[0]?.containers.includes('translator'));
 });
 
+const SETUP_SUCCESS = 'INFO translator_sv2::sv2::upstream::common_message_handler: Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)';
+// Real v0.7.0 tProxy log line (stratum-mining/sv2-apps#402). v0.7.0 and
+// earlier print the message with its Display impl, so the fields are in
+// parentheses.
+const CHANNEL_OPENED_DISPLAY = 'INFO translator_sv2::sv2::channel_manager::mining_message_handler: Received: OpenExtendedMiningChannelSuccess(request_id: 1, channel_id: 1, target: U256(000000000001fffe000000000000000000000000000000000000000000000000), extranonce_size: 6, extranonce_prefix: B032(), group_channel_id: 0), user_identity: plebhash.miner1, nominal_hashrate: 10000000000000';
+// v0.8.0 and later log the same handler with `{:?}` (790199d0), so the
+// message's Debug impl prints braces instead.
+const CHANNEL_OPENED_DEBUG = 'INFO translator_sv2::sv2::channel_manager::mining_message_handler: Received: OpenExtendedMiningChannelSuccess { request_id: 1, channel_id: 1, target: U256(000000000001fffe000000000000000000000000000000000000000000000000), extranonce_size: 6, extranonce_prefix: B032(), group_channel_id: 0 }, user_identity: plebhash.miner1, nominal_hashrate: 10000000000000';
+const SOCKET_CLOSED = 'ERROR translator_sv2::io_task: Reader error error=SocketClosed';
+
+test('upstreamClosedBeforeChannelParser: detects a handshake closed without a channel', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE('INFO translator_sv2: Starting Translator Proxy...'),
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+    SAMPLE_TRANSLATOR_LINE('ERROR translator_sv2::translator_runtime: All upstreams failed after 3 retries each'),
+  ];
+
+  const diagnostic = collectDiagnostics(lines, 'no-jd')[0];
+
+  assert.equal(diagnostic?.code, 'upstream-closed-before-channel');
+  assert.equal(diagnostic?.severity, 'error');
+  assert.equal(diagnostic?.containers[0], 'translator');
+  assert.equal(diagnostic?.detectedAt, '2026-04-22T18:40:21.344598Z');
+  assert.equal(diagnostic?.evidence.length, 2);
+  assert.ok(diagnostic?.evidence[0]?.line.includes('SetupConnectionSuccess'));
+  assert.ok(diagnostic?.evidence[1]?.line.includes('SocketClosed'));
+});
+
+test('upstreamClosedBeforeChannelParser: clears when the next attempt opens a channel', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(CHANNEL_OPENED_DISPLAY),
+  ];
+
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: recognizes the Debug-form channel opened line', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(CHANNEL_OPENED_DEBUG),
+  ];
+
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores a close after a channel was opened', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(CHANNEL_OPENED_DISPLAY),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: is only collected in no-JD mode', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.equal(collectDiagnostics(lines, 'jd').length, 0);
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 1);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores a socket close with no handshake before it', () => {
+  const lines = [SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED)];
+
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores matching lines from other containers', () => {
+  const lines = [
+    SAMPLE_JDC_LINE(SETUP_SUCCESS),
+    SAMPLE_JDC_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.equal(collectDiagnostics(lines, 'no-jd').length, 0);
+});
+
 test('invalidCertificateParser: detects InvalidCertificate in jd container', () => {
   const lines = [
     SAMPLE_JDC_LINE(
@@ -460,6 +546,8 @@ test('getAutoRetryPolicy: scenarios that may clear on their own retry', () => {
   assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-disconnected'), 'retry');
   assert.equal(getAutoRetryPolicy('invalid-certificate'), 'retry');
   assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-initial-block-download'), 'retry');
+  // A downstream miner connecting is what clears this no-JD-only failure.
+  assert.equal(getAutoRetryPolicy('upstream-closed-before-channel'), 'retry');
 });
 
 test('getAutoRetryPolicy: unknown codes have no policy', () => {
@@ -519,6 +607,22 @@ test('evaluateDiagnosisPolicy: a disconnected Bitcoin Core retries past the call
   assert.deepEqual(evaluateDiagnosisPolicy(lines), {
     action: 'proceed',
     codes: ['jdc-bitcoin-core-disconnected'],
+  });
+});
+
+test('evaluateDiagnosisPolicy: a no-JD-only diagnosis is ignored in JD mode', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.deepEqual(evaluateDiagnosisPolicy(lines, 'jd'), {
+    action: 'proceed',
+    codes: [],
+  });
+  assert.deepEqual(evaluateDiagnosisPolicy(lines, 'no-jd'), {
+    action: 'proceed',
+    codes: ['upstream-closed-before-channel'],
   });
 });
 
