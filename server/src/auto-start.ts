@@ -37,7 +37,8 @@ import type { SetupData, StatusResponse } from './types.js';
 import type { SavedState } from './state.js';
 import type { PreparedServiceConfig, ServiceConfigFile } from './service-config.js';
 import type { ContainerLogLine } from './logs/types.js';
-import { collectDiagnostics, getAutoRetryPolicy } from './logs/parsers.js';
+import { evaluateDiagnosisPolicy } from './logs/parsers.js';
+import type { DiagnosisRetryDecision } from './logs/parsers.js';
 import { isOnlyTranslatorStopped, isStackRunning } from './stack-health.js';
 
 export const AUTO_START_MIN_BACKOFF_MS = 60_000;
@@ -204,36 +205,22 @@ export class AutoStartReconciler {
    * Consult the diagnostics in the stopped containers' logs and return a
    * pause reason when auto-start must not restart, or null when it may.
    *
-   * - 'never' (and unknown codes): fatal and user-actionable, or simply
-   *   unrecognized. Stay paused until the user acts; a config change or
-   *   Start/Restart goes through the manual path and restarts with fresh
-   *   logs regardless of this decision.
-   * - 'retry': may clear without user action. Fall through to the start
-   *   path; its precondition checks (Bitcoin Core socket) still gate JD.
+   * The decision itself comes from the shared evaluateDiagnosisPolicy so
+   * this loop and translator recovery cannot drift apart; the log-once
+   * state stays here.
    */
   private async evaluateStoppedStackDiagnostics(state: SavedState): Promise<string | null> {
-    let diagnostics;
+    let decision: DiagnosisRetryDecision;
     try {
-      diagnostics = collectDiagnostics(await this.deps.readStackLogs(state.mode));
+      decision = evaluateDiagnosisPolicy(await this.deps.readStackLogs(state.mode));
     } catch {
       // Log read failures are not a diagnosis. Proceeding is safe: the
       // start path already tolerates Docker hiccups via backoff.
       return null;
     }
 
-    if (diagnostics.length === 0) {
-      this.pauseLoggedFor = null;
-      return null;
-    }
-
-    const codes = diagnostics.map((diagnostic) => diagnostic.code);
-
-    const blocks = codes.some((code) => {
-      const policy = getAutoRetryPolicy(code);
-      return policy === null || policy === 'never';
-    });
-    if (blocks) {
-      const key = [...codes].sort().join(', ');
+    if (decision.action === 'pause') {
+      const key = decision.codes.join(', ');
       if (this.pauseLoggedFor !== key) {
         this.pauseLoggedFor = key;
         this.log().log(
@@ -245,10 +232,10 @@ export class AutoStartReconciler {
       return `diagnosed:${key}`;
     }
 
-    // Only 'retry' policies here: proceed and let the start path's
-    // precondition checks (Bitcoin Core socket) gate the restart. If the
-    // restart fails quickly, the quick-exit backoff in reconcile() paces
-    // the next attempt and leaves the stopped containers in place.
+    // No diagnosis or only 'retry' policies: proceed and let the start
+    // path's precondition checks (Bitcoin Core socket) gate the restart.
+    // If the restart fails quickly, the quick-exit backoff in reconcile()
+    // paces the next attempt and leaves the stopped containers in place.
     this.pauseLoggedFor = null;
     return null;
   }

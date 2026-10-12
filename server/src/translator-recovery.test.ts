@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TRANSLATOR_FAILING_AFTER_MS, TranslatorRecovery } from './translator-recovery.js';
+import type { DiagnosisRetryDecision } from './logs/parsers.js';
 
 const CHECK_MS = 5_000;
 const down = (jdcHasUpstream = true) => ({ kind: 'down', jdcHasUpstream }) as const;
@@ -77,4 +78,72 @@ test('a full-stack restart path clears recovery state', () => {
   assert.deepEqual(recovery.status(CHECK_MS), { recovering: false, downForSecs: null, failing: false });
   recovery.observe(down(), 2 * CHECK_MS);
   assert.equal(recovery.restartDue(), true);
+});
+
+const pause: DiagnosisRetryDecision = { action: 'pause', codes: ['unknown-user'] };
+const clean: DiagnosisRetryDecision = { action: 'proceed', codes: [] };
+
+test('gateRestart: a never diagnosis blocks the restart and logs once', () => {
+  const recovery = new TranslatorRecovery();
+
+  const first = recovery.gateRestart(pause);
+  assert.equal(first.allowed, false, 'unknown-user must not restart blind');
+  assert.ok(first.message?.includes('unknown-user'));
+
+  const second = recovery.gateRestart(pause);
+  assert.deepEqual(second, { allowed: false, message: null }, 'same occurrence stays quiet');
+
+  const other: DiagnosisRetryDecision = { action: 'pause', codes: ['future-code'] };
+  const third = recovery.gateRestart(other);
+  assert.ok(third.message, 'a different diagnosed failure logs again');
+});
+
+test('gateRestart: a clean log set allows and clears the logged pause', () => {
+  const recovery = new TranslatorRecovery();
+  recovery.gateRestart(pause);
+
+  assert.deepEqual(recovery.gateRestart(clean), { allowed: true, message: null });
+
+  const again = recovery.gateRestart(pause);
+  assert.ok(again.message, 'a recurrence after recovery logs once more');
+});
+
+test('gateRestart: a retry diagnosis allows the restart', () => {
+  const recovery = new TranslatorRecovery();
+  const retry: DiagnosisRetryDecision = {
+    action: 'proceed',
+    codes: ['invalid-certificate'],
+  };
+
+  assert.deepEqual(recovery.gateRestart(retry), { allowed: true, message: null });
+});
+
+test('gateRestart: gating leaves the observation state for the UI alone', () => {
+  const recovery = new TranslatorRecovery();
+  recovery.observe(down(true), 0);
+  recovery.observe(down(true), CHECK_MS);
+
+  const gate = recovery.gateRestart(pause);
+  assert.equal(gate.allowed, false);
+
+  // The dashboard keeps counting: down time grows and the failing clock runs.
+  const at = 2 * CHECK_MS + TRANSLATOR_FAILING_AFTER_MS;
+  recovery.observe(down(true), at);
+  const status = recovery.status(at);
+  assert.equal(status.recovering, true);
+  assert.ok((status.downForSecs ?? 0) > 0);
+  assert.equal(status.failing, true);
+});
+
+test('gateRestart: a recovery cycle clears the gate so the next pause logs', () => {
+  const recovery = new TranslatorRecovery();
+  recovery.observe(down(), 0);
+  recovery.gateRestart(pause);
+
+  // JDC down too: the full stack path takes over and resets recovery.
+  recovery.observe({ kind: 'not-applicable' }, CHECK_MS);
+  recovery.observe(down(), 2 * CHECK_MS);
+
+  const again = recovery.gateRestart(pause);
+  assert.ok(again.message, 'state reset wipes the log-once key');
 });

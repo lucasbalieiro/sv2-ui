@@ -276,6 +276,42 @@ export function getAutoRetryPolicy(code: string): AutoRetryPolicy | null {
   return logParsers.find((parser) => parser.code === code)?.autoRetry ?? null;
 }
 
+export type DiagnosisRetryDecision = {
+  /** What a restart loop may do with the stopped containers. */
+  action: 'proceed' | 'pause';
+  /** Diagnosed codes, sorted; empty when nothing was diagnosed. */
+  codes: string[];
+};
+
+/**
+ * Decide how a restart loop may treat a stopped set of mining containers
+ * given their recent log lines. Shared by the auto-start reconciler and the
+ * JD Translator recovery loop so both apply the policy table identically:
+ *
+ * - 'pause': a 'never' code or an unregistered code is present. Recreating
+ *   the containers would remove them, Docker would delete their logs, and
+ *   the diagnostic banner would lose the evidence it is showing.
+ * - 'proceed': no diagnosis, or only 'retry' codes. The caller may restart;
+ *   its own precondition checks (e.g. the Bitcoin Core socket probe) still
+ *   gate the attempt.
+ */
+export function evaluateDiagnosisPolicy(lines: ContainerLogLine[]): DiagnosisRetryDecision {
+  const codes = collectDiagnostics(lines)
+    .map((diagnostic) => diagnostic.code)
+    .sort();
+
+  if (codes.length === 0) {
+    return { action: 'proceed', codes };
+  }
+
+  const policies = codes.map(getAutoRetryPolicy);
+  if (policies.some((policy) => policy === null || policy === 'never')) {
+    return { action: 'pause', codes };
+  }
+
+  return { action: 'proceed', codes };
+}
+
 function toDiagnosticsArray(
   diagnostic: LogDiagnostic | LogDiagnostic[] | null
 ): LogDiagnostic[] {

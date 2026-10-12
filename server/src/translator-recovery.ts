@@ -1,3 +1,5 @@
+import type { DiagnosisRetryDecision } from './logs/parsers.js';
+
 /**
  * Checks to wait before each further Translator restart: the first restart
  * happens on the check that finds it down, later ones after 1, 2, then 3
@@ -29,6 +31,14 @@ export type TranslatorRecoveryStatus = {
   failing: boolean;
 };
 
+/** What the diagnosis gate decided for a due Translator restart. */
+export type TranslatorGateDecision = {
+  /** Whether the restart may proceed. */
+  allowed: boolean;
+  /** Caller-loggable explanation; null when nothing needs saying. */
+  message: string | null;
+};
+
 /**
  * Tracks a Translator that stopped while JDC keeps running, across restart
  * attempts, so the dashboard can tell a short reconnect from a Translator
@@ -40,6 +50,8 @@ export class TranslatorRecovery {
   private restarts = 0;
   private checksUntilRestart = 0;
   private upChecks = 0;
+  /** The paused-diagnosis code already logged, to log the pause only once. */
+  private pauseLoggedFor: string | null = null;
 
   /** Record one recovery check. */
   observe(observation: TranslatorObservation, now: number): void {
@@ -81,11 +93,46 @@ export class TranslatorRecovery {
     };
   }
 
+  /**
+   * Consult the diagnoses in the stopped containers' logs before a restart
+   * that is otherwise due, and decide whether it may proceed.
+   *
+   * Same policy as the auto-start reconciler (shared evaluateDiagnosisPolicy)
+   * but its own log-once state, because these are two independent loops:
+   *
+   * - 'pause': a fatal, user-actionable diagnosis (unknown-user) or an
+   *   unrecognized one. The restart removes the Translator container, Docker
+   *   deletes its logs, and the banner would blink while the evidence the
+   *   user needs disappears. Logged once per occurrence; the observation
+   *   keeps ticking so downForSecs/failing still count.
+   * - 'proceed': no diagnosis or only 'retry' codes; the restart proceeds
+   *   with the existing 1-2-3 check backoff.
+   *
+   * Returns whether to restart plus a message to log once per occurrence.
+   */
+  gateRestart(decision: DiagnosisRetryDecision): TranslatorGateDecision {
+    if (decision.action === 'pause') {
+      const key = decision.codes.join(', ');
+      const message =
+        this.pauseLoggedFor === key
+          ? null
+          : `Translator recovery: Translator stopped with a diagnosed failure (${key}). ` +
+            'Not restarting: the fix requires user action, and the diagnostic banner ' +
+            'needs the container logs to stay on screen.';
+      this.pauseLoggedFor = key;
+      return { allowed: false, message };
+    }
+
+    this.pauseLoggedFor = null;
+    return { allowed: true, message: null };
+  }
+
   private reset(): void {
     this.downSince = null;
     this.failingSince = null;
     this.restarts = 0;
     this.checksUntilRestart = 0;
     this.upChecks = 0;
+    this.pauseLoggedFor = null;
   }
 }
