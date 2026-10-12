@@ -251,6 +251,7 @@ const autoStart = new AutoStartReconciler({
   startStack,
   saveState,
   getBitcoinSocketStartupError,
+  readStackLogs: (mode) => readCollatedLogLines(mode),
   tryAcquire: () => beginStackOperation('auto-start'),
   release: () => finishStackOperation('auto-start'),
   configDir: CONFIG_DIR,

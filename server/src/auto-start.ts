@@ -6,6 +6,26 @@
  * app updates, and generated-config drift: whenever the stack is stopped or
  * running with stale generated files, it brings the stack back in line.
  *
+ * Two guards keep that recovery from fighting the diagnostic banners (PR
+ * #96 made the mining containers RestartPolicy=no so a failed container
+ * stays stopped and its logs stay readable):
+ *
+ * - Diagnosed failures pause recovery. Before restarting a stopped stack
+ *   the reconciler reads the stopped containers' logs and consults each
+ *   diagnostic's autoRetry policy. A fatal, user-actionable scenario
+ *   (unknown-user) or an unrecognized one must not trigger blind
+ *   restarts: stopStack removes the containers, Docker deletes their
+ *   logs with them, and the banner would blink every tick while the
+ *   evidence the user needs disappears. Self-healing scenarios retry on
+ *   a slow schedule; probe-gated ones fall through to the start path's
+ *   precondition checks.
+ *
+ * - Crash loops back off. A stack that stops again shortly after
+ *   auto-start started it counts as a start failure, so the existing
+ *   exponential backoff applies instead of a restart every tick. Success
+ *   is only declared when a later tick observes the stack running, not
+ *   when startStack returns.
+ *
  * It is deliberately extracted from index.ts with injected dependencies so
  * the decision logic is unit-testable. The stack-operation lock (which is
  * shared with the manual start/stop endpoints and surfaced as
@@ -16,10 +36,22 @@
 import type { SetupData, StatusResponse } from './types.js';
 import type { SavedState } from './state.js';
 import type { PreparedServiceConfig, ServiceConfigFile } from './service-config.js';
+import type { ContainerLogLine } from './logs/types.js';
+import { collectDiagnostics, getAutoRetryPolicy } from './logs/parsers.js';
 import { isOnlyTranslatorStopped, isStackRunning } from './stack-health.js';
 
 export const AUTO_START_MIN_BACKOFF_MS = 60_000;
 export const AUTO_START_MAX_BACKOFF_MS = 5 * 60_000;
+
+/**
+ * A stack that stops again within this window of an auto-start start is
+ * crash-looping rather than recovering, so it counts as a failed start.
+ * Two 30s ticks plus slack.
+ */
+export const QUICK_EXIT_WINDOW_MS = 90_000;
+
+/** Minimum spacing between restarts for a self-healing ('slow') diagnosis. */
+export const SLOW_RETRY_MS = 10 * 60_000;
 
 type StackContainers = StatusResponse['containers'];
 
@@ -36,6 +68,8 @@ export type AutoStartDeps = {
   startStack: (data: SetupData, configDir: string) => Promise<void>;
   saveState: (data: SetupData, shouldBeRunning: boolean) => Promise<void>;
   getBitcoinSocketStartupError: (data: SetupData) => Promise<string | null>;
+  /** Recent log lines of the mining containers for the current mode. */
+  readStackLogs: (mode: SavedState['mode']) => Promise<ContainerLogLine[]>;
   /** Take the shared stack-operation lock, or return false when busy. */
   tryAcquire: () => boolean;
   /** Release the shared lock; only meaningful after a successful tryAcquire. */
@@ -49,6 +83,12 @@ export class AutoStartReconciler {
   private failureCount = 0;
   private nextAttemptAt = 0;
   private setupReviewLogged = false;
+  /** When the last auto-start-initiated start completed; null when none. */
+  private autoStartedAt: number | null = null;
+  /** Earliest time a 'slow'-policy diagnosis may be retried. */
+  private nextSlowRetryAt = 0;
+  /** The paused-diagnosis code already logged, to log the pause only once. */
+  private pauseLoggedFor: string | null = null;
 
   constructor(private readonly deps: AutoStartDeps) {}
 
@@ -60,6 +100,9 @@ export class AutoStartReconciler {
   resetRecoveryState(): void {
     this.resetBackoff();
     this.setupReviewLogged = false;
+    this.autoStartedAt = null;
+    this.nextSlowRetryAt = 0;
+    this.pauseLoggedFor = null;
   }
 
   async reconcile(): Promise<void> {
@@ -96,6 +139,10 @@ export class AutoStartReconciler {
       // interrupted update and applies new generated configuration on boot.
       const drift = await this.deps.getServiceConfigDrift(prepared.files, this.deps.configDir);
       if (running && drift.length === 0) {
+        // The stack is up and matches the desired config: this is the only
+        // place success is declared. A start that returns but stops again
+        // must reach the quick-exit check below instead of clearing the
+        // backoff it just earned.
         this.resetRecoveryState();
         return;
       }
@@ -105,6 +152,27 @@ export class AutoStartReconciler {
       if (drift.length === 0 && isOnlyTranslatorStopped(state.mode, containers)) {
         this.resetRecoveryState();
         return;
+      }
+
+      if (!running) {
+        // A stack that stopped again right after we started it is
+        // crash-looping: count it as a failed start so the backoff
+        // applies, instead of recreating (and log-wiping) every tick.
+        if (this.autoStartedAt !== null &&
+          this.now() - this.autoStartedAt < QUICK_EXIT_WINDOW_MS) {
+          this.autoStartedAt = null;
+          this.recordFailure(
+            new Error(`Mining services stopped within ${Math.round(QUICK_EXIT_WINDOW_MS / 1000)}s of an auto-start`),
+          );
+          return;
+        }
+
+        // Restarting removes the stopped containers, and Docker deletes a
+        // container's logs when it is removed. Decide from the failure's
+        // retry policy first so a user-actionable diagnosis keeps its
+        // evidence (and its steady banner) on screen.
+        const pause = await this.evaluateStoppedStackDiagnostics(state);
+        if (pause !== null) return;
       }
 
       if (prepared.data.mode === 'jd') {
@@ -129,13 +197,76 @@ export class AutoStartReconciler {
 
       await this.deps.saveState(prepared.data, true);
       await this.deps.startStack(prepared.data, this.deps.configDir);
-      this.resetRecoveryState();
+      this.autoStartedAt = this.now();
       this.log().log('Auto-start: containers started successfully');
     } catch (error) {
       this.recordFailure(error);
     } finally {
       this.deps.release();
     }
+  }
+
+  /**
+   * Consult the diagnostics in the stopped containers' logs and return a
+   * pause reason when auto-start must not restart, or null when it may.
+   *
+   * - 'never' (and unknown codes): fatal and user-actionable, or simply
+   *   unrecognized. Stay paused until the user acts; a config change or
+   *   Start/Restart goes through the manual path and restarts with fresh
+   *   logs regardless of this decision.
+   * - 'slow': possibly self-healing (NTP clock sync). Allow a retry at
+   *   most once per SLOW_RETRY_MS.
+   * - 'probe': gated by an external precondition; fall through so the
+   *   start path's socket check decides.
+   */
+  private async evaluateStoppedStackDiagnostics(state: SavedState): Promise<string | null> {
+    let diagnostics;
+    try {
+      diagnostics = collectDiagnostics(await this.deps.readStackLogs(state.mode));
+    } catch {
+      // Log read failures are not a diagnosis. Proceeding is safe: the
+      // start path already tolerates Docker hiccups via backoff.
+      return null;
+    }
+
+    if (diagnostics.length === 0) {
+      this.pauseLoggedFor = null;
+      return null;
+    }
+
+    const codes = diagnostics.map((diagnostic) => diagnostic.code);
+
+    const blocks = codes.some((code) => {
+      const policy = getAutoRetryPolicy(code);
+      return policy === null || policy === 'never';
+    });
+    if (blocks) {
+      const key = [...codes].sort().join(', ');
+      if (this.pauseLoggedFor !== key) {
+        this.pauseLoggedFor = key;
+        this.log().log(
+          `Auto-start: mining services are stopped with a diagnosed failure (${key}). ` +
+          'Not restarting: the fix requires user action, and the diagnostic banner ' +
+          'needs the container logs to stay on screen.',
+        );
+      }
+      return `diagnosed:${key}`;
+    }
+
+    if (codes.some((code) => getAutoRetryPolicy(code) === 'slow')) {
+      if (this.now() < this.nextSlowRetryAt) return 'slow-retry-pending';
+      this.nextSlowRetryAt = this.now() + SLOW_RETRY_MS;
+      this.log().log(
+        `Auto-start: diagnosed failure (${codes.join(', ')}) may resolve on its own. ` +
+        `Retrying at most once every ${Math.round(SLOW_RETRY_MS / 60_000)} minutes.`,
+      );
+      return null;
+    }
+
+    // Only 'probe' policies here: proceed and let the start path's
+    // precondition checks (Bitcoin Core socket) gate the restart.
+    this.pauseLoggedFor = null;
+    return null;
   }
 
   private now(): number {
