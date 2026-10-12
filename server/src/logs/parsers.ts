@@ -1,4 +1,5 @@
 import type {
+  AutoRetryPolicy,
   ContainerLogLine,
   DiagnosticEvidence,
   DiagnosticSeverity,
@@ -52,7 +53,8 @@ export function unknownUserParser(lines: ContainerLogLine[]): LogDiagnostic | nu
     title: 'Invalid Braiins username',
     message: 'The Braiins username is not recognized by the pool.',
     recommendation:
-      'Verify the Braiins username in your settings matches the pool account exactly.',
+      'Verify the Braiins username in your settings matches the pool account exactly, ' +
+      'then start mining again.',
     streamId: 'mining-services',
     containers: ['translator'],
     detectedAt: matches[0].timestamp,
@@ -232,19 +234,47 @@ function invalidCertificateParser(lines: ContainerLogLine[]): LogDiagnostic | nu
 
 // Central registry for scenario-specific parsers. New log-derived diagnostics
 // should be added here without changing the collection pipeline.
+//
+// autoRetry encodes what the auto-start reconciler may do while the scenario
+// is diagnosed on a stopped stack (see AutoRetryPolicy):
+// - unknown-user / unsupported-mining-interface: fatal and fixed only via a
+//   config change, which restarts the stack itself. Never auto-restart.
+// - jdc-bitcoin-core-disconnected: fatal, but the JD start path already gates
+//   on a Bitcoin Core socket probe, so restarting once the probe passes is
+//   safe ('probe').
+// - invalid-certificate: caused by clock skew that NTP may fix on its own, so
+//   retry, but slowly.
+// - initial-block-download: JDC stays up while syncing so this normally never
+//   reaches the reconciler; 'slow' is a defensive default.
 export const logParsers: LogParser[] = [
-  { code: 'unknown-user', match: unknownUserParser },
-  { code: 'jdc-bitcoin-core-disconnected', match: jdcBitcoinCoreDisconnectedParser },
+  { code: 'unknown-user', match: unknownUserParser, autoRetry: 'never' },
+  {
+    code: 'jdc-bitcoin-core-disconnected',
+    match: jdcBitcoinCoreDisconnectedParser,
+    autoRetry: 'retry',
+  },
   {
     code: 'jdc-bitcoin-core-initial-block-download',
     match: jdcBitcoinCoreInitialBlockDownloadParser,
+    autoRetry: 'retry',
   },
   {
     code: 'jdc-bitcoin-core-unsupported-mining-interface',
     match: jdcBitcoinCoreUnsupportedMiningInterfaceParser,
+    autoRetry: 'never',
   },
-  { code: 'invalid-certificate', match: invalidCertificateParser },
+  { code: 'invalid-certificate', match: invalidCertificateParser, autoRetry: 'retry' },
 ];
+
+/**
+ * The auto-start policy for a diagnostic code, or null when the code is not
+ * in the registry (a diagnostic produced by a parser registered under a
+ * different code). Callers must treat null as 'never': an unknown scenario
+ * is by definition one we cannot justify auto-restarting around.
+ */
+export function getAutoRetryPolicy(code: string): AutoRetryPolicy | null {
+  return logParsers.find((parser) => parser.code === code)?.autoRetry ?? null;
+}
 
 function toDiagnosticsArray(
   diagnostic: LogDiagnostic | LogDiagnostic[] | null

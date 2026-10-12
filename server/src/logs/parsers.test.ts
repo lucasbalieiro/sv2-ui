@@ -6,9 +6,11 @@ import {
   jdcBitcoinCoreDisconnectedParser,
   jdcBitcoinCoreInitialBlockDownloadParser,
   jdcBitcoinCoreUnsupportedMiningInterfaceParser,
+  getAutoRetryPolicy,
+  logParsers,
 } from './parsers.js';
 import { collectDiagnostics } from './parsers.js';
-import type { ContainerLogLine } from './types.js';
+import type { AutoRetryPolicy, ContainerLogLine } from './types.js';
 
 function createLogLine(
   container: 'translator' | 'jdc',
@@ -446,4 +448,29 @@ test('invalidCertificateParser: returns evidence with line data', () => {
   assert.equal(diagnostics[0]?.evidence.length, 1);
   assert.equal(diagnostics[0]?.evidence[0]?.container, 'translator');
   assert.equal(diagnostics[0]?.evidence[0]?.stream, 'stderr');
+});
+
+test('getAutoRetryPolicy: fatal config-bound scenarios never auto-restart', () => {
+  assert.equal(getAutoRetryPolicy('unknown-user'), 'never');
+  assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-unsupported-mining-interface'), 'never');
+});
+
+test('getAutoRetryPolicy: scenarios that may clear on their own retry', () => {
+  assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-disconnected'), 'retry');
+  assert.equal(getAutoRetryPolicy('invalid-certificate'), 'retry');
+  assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-initial-block-download'), 'retry');
+});
+
+test('getAutoRetryPolicy: unknown codes have no policy', () => {
+  assert.equal(getAutoRetryPolicy('not-a-real-code'), null);
+});
+
+test('every registered parser declares an autoRetry policy', () => {
+  const policies: AutoRetryPolicy[] = ['never', 'retry'];
+  for (const parser of logParsers) {
+    assert.ok(
+      policies.includes(parser.autoRetry),
+      `${parser.code} has invalid autoRetry: ${parser.autoRetry}`
+    );
+  }
 });
