@@ -28,6 +28,16 @@ const JDC_BITCOIN_CORE_UNSUPPORTED_MINING_INTERFACE_REGEX =
 const INVALID_CERTIFICATE_REGEX =
   /(InvalidCertificate|Invalid Certificate).*SignatureNoiseMessage \{ version: \d+, valid_from: (\d+), not_valid_after: (\d+),/;
 
+// The upstream finished the SV2 setup handshake...
+const UPSTREAM_SETUP_SUCCESS_REGEX = /Received: SetupConnectionSuccess\(/;
+
+// ...this connection then opened a mining channel, so it was productive...
+const UPSTREAM_CHANNEL_OPENED_REGEX =
+  /Received: Open(?:Standard|Extended)MiningChannelSuccess\(/;
+
+// ...or it was closed with no channel ever opened on it.
+const UPSTREAM_SOCKET_CLOSED_REGEX = /io_task: Reader error error=SocketClosed/;
+
 export function unknownUserParser(lines: ContainerLogLine[]): LogDiagnostic | null {
   const matches = lines.filter(
     ({ container, message }) =>
@@ -231,6 +241,84 @@ function invalidCertificateParser(lines: ContainerLogLine[]): LogDiagnostic | nu
   };
 }
 
+/**
+ * A pool can drop an upstream connection that has completed the SV2 setup
+ * handshake but never opened a mining channel on it: Braiins, for one,
+ * closes such a connection about 15 seconds after SetupConnectionSuccess.
+ * The Translator opens its channel for downstream miners, so a stack with
+ * no SV1 miner connected exhausts its upstream retries and exits — the
+ * same failure on every run, and invisible in the logs unless you know to
+ * look for it.
+ *
+ * The signature in the logs is the pair itself: a setup handshake followed
+ * by a reader SocketClosed, with no channel-opened success in between. A
+ * handshake that is later followed by a successful channel means this
+ * connection recovered, which clears the pair, so a transient close on
+ * one attempt does not outlive the retry that worked.
+ */
+export function upstreamClosedBeforeChannelParser(
+  lines: ContainerLogLine[]
+): LogDiagnostic | null {
+  // A completed handshake still waiting for its channel, and the most
+  // recent handshake that was closed without one.
+  let awaitingChannel: ContainerLogLine | null = null;
+  let closedWithoutChannel:
+    | { accepted: ContainerLogLine; closed: ContainerLogLine }
+    | null = null;
+
+  for (const line of lines) {
+    if (line.container !== 'translator') {
+      continue;
+    }
+
+    if (UPSTREAM_CHANNEL_OPENED_REGEX.test(line.message)) {
+      awaitingChannel = null;
+      closedWithoutChannel = null;
+      continue;
+    }
+
+    if (UPSTREAM_SETUP_SUCCESS_REGEX.test(line.message)) {
+      awaitingChannel = line;
+      continue;
+    }
+
+    if (awaitingChannel !== null && UPSTREAM_SOCKET_CLOSED_REGEX.test(line.message)) {
+      closedWithoutChannel = { accepted: awaitingChannel, closed: line };
+      awaitingChannel = null;
+    }
+  }
+
+  if (closedWithoutChannel === null) {
+    return null;
+  }
+
+  const evidence: DiagnosticEvidence[] = [
+    closedWithoutChannel.accepted,
+    closedWithoutChannel.closed,
+  ].map(({ container, stream, timestamp, raw }) => ({
+    container,
+    stream,
+    timestamp,
+    line: raw,
+  }));
+
+  return {
+    code: 'upstream-closed-before-channel',
+    severity: 'error' as DiagnosticSeverity,
+    title: 'The pool closed the connection before a channel was opened',
+    message:
+      'The pool accepted the SV2 setup connection, then closed it before the Translator opened a mining channel.',
+    recommendation:
+      'Pools such as Braiins close a setup connection that does not open a channel within about 15 seconds. ' +
+      'The Translator opens its channel for downstream miners, so connect an SV1 miner and start mining ' +
+      'again; miners on SV2 firmware connect through JDC instead.',
+    streamId: 'mining-services',
+    containers: ['translator'],
+    detectedAt: closedWithoutChannel.closed.timestamp,
+    evidence,
+  };
+}
+
 // Central registry for scenario-specific parsers. New log-derived diagnostics
 // should be added here without changing the collection pipeline.
 //
@@ -245,6 +333,8 @@ function invalidCertificateParser(lines: ContainerLogLine[]): LogDiagnostic | nu
 //   retry, but slowly.
 // - initial-block-download: JDC stays up while syncing so this normally never
 //   reaches the reconciler; 'slow' is a defensive default.
+// - upstream-closed-before-channel: caused by no downstream miner connecting
+//   in time. That resolves when one does, so retry, but slowly.
 export const logParsers: LogParser[] = [
   { code: 'unknown-user', match: unknownUserParser, autoRetry: 'never' },
   {
@@ -263,6 +353,11 @@ export const logParsers: LogParser[] = [
     autoRetry: 'never',
   },
   { code: 'invalid-certificate', match: invalidCertificateParser, autoRetry: 'slow' },
+  {
+    code: 'upstream-closed-before-channel',
+    match: upstreamClosedBeforeChannelParser,
+    autoRetry: 'slow',
+  },
 ];
 
 /**

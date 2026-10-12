@@ -33,8 +33,9 @@ export type AutoRetryPolicy =
   // (e.g. the Bitcoin Core socket). Auto-start may restart once the probe
   // passes; until then it backs off like any other start failure.
   | 'probe'
-  // May self-heal externally (e.g. an NTP-synced clock for certificate
-  // validation). Auto-start retries, but only on a slow schedule instead
-  // of the normal 30s tick.
+  // May resolve without the app's help (e.g. an NTP-synced clock for
+  // certificate validation, or a downstream miner finally connecting to
+  // the Translator). Auto-start retries, but only on a slow schedule
+  // instead of the normal 30s tick.
   | 'slow';
 

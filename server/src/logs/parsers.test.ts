@@ -412,6 +412,65 @@ test('invalidCertificateParser: detects InvalidCertificate in translator', () =>
   assert.ok(diagnostics[0]?.containers.includes('translator'));
 });
 
+const SETUP_SUCCESS = 'INFO translator_sv2::sv2::upstream::common_message_handler: Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)';
+const CHANNEL_OPENED = 'INFO translator_sv2::sv2::channel_manager: Received: OpenStandardMiningChannelSuccess(request_id: 1, channel_id: 1, target: [0u8; 32], nominal_hash_rate: 4.0, max_target: [7u8; 32], min_extranonce_size: 0)';
+const SOCKET_CLOSED = 'ERROR translator_sv2::io_task: Reader error error=SocketClosed';
+
+test('upstreamClosedBeforeChannelParser: detects a handshake closed without a channel', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE('INFO translator_sv2: Starting Translator Proxy...'),
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+    SAMPLE_TRANSLATOR_LINE('ERROR translator_sv2::translator_runtime: All upstreams failed after 3 retries each'),
+  ];
+
+  const diagnostic = collectDiagnostics(lines)[0];
+
+  assert.equal(diagnostic?.code, 'upstream-closed-before-channel');
+  assert.equal(diagnostic?.severity, 'error');
+  assert.equal(diagnostic?.containers[0], 'translator');
+  assert.equal(diagnostic?.detectedAt, '2026-04-22T18:40:21.344598Z');
+  assert.equal(diagnostic?.evidence.length, 2);
+  assert.ok(diagnostic?.evidence[0]?.line.includes('SetupConnectionSuccess'));
+  assert.ok(diagnostic?.evidence[1]?.line.includes('SocketClosed'));
+});
+
+test('upstreamClosedBeforeChannelParser: clears when the next attempt opens a channel', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(CHANNEL_OPENED),
+  ];
+
+  assert.equal(collectDiagnostics(lines).length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores a close after a channel was opened', () => {
+  const lines = [
+    SAMPLE_TRANSLATOR_LINE(SETUP_SUCCESS),
+    SAMPLE_TRANSLATOR_LINE(CHANNEL_OPENED),
+    SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.equal(collectDiagnostics(lines).length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores a socket close with no handshake before it', () => {
+  const lines = [SAMPLE_TRANSLATOR_LINE(SOCKET_CLOSED)];
+
+  assert.equal(collectDiagnostics(lines).length, 0);
+});
+
+test('upstreamClosedBeforeChannelParser: ignores matching lines from other containers', () => {
+  const lines = [
+    SAMPLE_JDC_LINE(SETUP_SUCCESS),
+    SAMPLE_JDC_LINE(SOCKET_CLOSED),
+  ];
+
+  assert.equal(collectDiagnostics(lines).length, 0);
+});
+
 test('invalidCertificateParser: detects InvalidCertificate in jd container', () => {
   const lines = [
     SAMPLE_JDC_LINE(
@@ -463,6 +522,9 @@ test('getAutoRetryPolicy: scenarios with an external precondition use the probe'
 test('getAutoRetryPolicy: self-healing scenarios retry slowly', () => {
   assert.equal(getAutoRetryPolicy('invalid-certificate'), 'slow');
   assert.equal(getAutoRetryPolicy('jdc-bitcoin-core-initial-block-download'), 'slow');
+  // The pool closes a connection that opens no channel in time; a downstream
+  // miner connecting is what clears it.
+  assert.equal(getAutoRetryPolicy('upstream-closed-before-channel'), 'slow');
 });
 
 test('getAutoRetryPolicy: unknown codes have no policy', () => {
