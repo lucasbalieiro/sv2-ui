@@ -13,7 +13,6 @@ test('does not present an unverified configured name as the connected pool ident
       <Router ssrPath="/">
         <Shell
           connectionStatus="connected"
-          poolName="Braiins Pool"
           activePoolAddress="attacker.example"
           activePoolPort={3333}
           activePoolAuthorityPublicKey="9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
@@ -30,6 +29,9 @@ test('does not present an unverified configured name as the connected pool ident
     'a display name from configuration must not be presented as an authenticated ' +
       'pool identity when address, port, and authority key do not match the preset',
   );
+  // The endpoint that was authenticated is shown instead.
+  assert.match(html, /Connected to attacker\.example</);
+  assert.match(html, /title="attacker\.example:3333"/);
 });
 
 test('presents a recognized pool name when address, port, and authority key match', () => {
@@ -39,7 +41,6 @@ test('presents a recognized pool name when address, port, and authority key matc
       <Router ssrPath="/">
         <Shell
           connectionStatus="connected"
-          poolName="Braiins Pool"
           activePoolAddress="stratum.braiins.com"
           activePoolPort={3333}
           activePoolAuthorityPublicKey="9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna"
@@ -117,4 +118,91 @@ test('labels the solo fallback without a degraded note', () => {
   assert.match(html, /Solo Mining \(fallback\)/);
   assert.match(html, /bg-amber-500/);
   assert.doesNotMatch(html, /SV1 reconnecting|Disconnected/);
+});
+
+test('brackets an IPv6 custom pool address in the endpoint tooltip', () => {
+  const queryClient = new QueryClient();
+  const html = renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <Router ssrPath="/">
+        <Shell
+          connectionStatus="connected"
+          activePoolAddress="2001:db8::10"
+          activePoolPort={3333}
+          activePoolAuthorityPublicKey="9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+        >
+          <div>dashboard</div>
+        </Shell>
+      </Router>
+    </QueryClientProvider>,
+  );
+
+  assert.match(html, /Connected to 2001:db8::10</);
+  assert.match(html, /title="\[2001:db8::10\]:3333"/);
+});
+
+test('marks a recognized fallback pool by name', () => {
+  const queryClient = new QueryClient();
+  const html = renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <Router ssrPath="/">
+        <Shell
+          connectionStatus="fallback"
+          activePoolAddress="75.119.150.111"
+          activePoolPort={3333}
+          activePoolAuthorityPublicKey="9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+          activePoolIndex={1}
+        >
+          <div>dashboard</div>
+        </Shell>
+      </Router>
+    </QueryClientProvider>,
+  );
+
+  assert.match(html, /Connected to SRI Pool \(fallback\)/);
+  assert.match(html, /bg-amber-500/);
+});
+
+test('marks a custom fallback pool by its address', () => {
+  const queryClient = new QueryClient();
+  const html = renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <Router ssrPath="/">
+        <Shell
+          connectionStatus="fallback"
+          activePoolAddress="backup.example.com"
+          activePoolPort={3333}
+          activePoolAuthorityPublicKey="9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+          activePoolIndex={2}
+        >
+          <div>dashboard</div>
+        </Shell>
+      </Router>
+    </QueryClientProvider>,
+  );
+
+  assert.match(html, /Connected to backup\.example\.com \(fallback\)</);
+  assert.match(html, /backup\.example\.com:3333/);
+});
+
+test('keeps the fallback mark while the Translator restarts', () => {
+  const queryClient = new QueryClient();
+  const html = renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <Router ssrPath="/">
+        <Shell
+          connectionStatus="degraded"
+          activePoolAddress="75.119.150.111"
+          activePoolPort={3333}
+          activePoolAuthorityPublicKey="9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+          activePoolIndex={1}
+        >
+          <div>dashboard</div>
+        </Shell>
+      </Router>
+    </QueryClientProvider>,
+  );
+
+  assert.match(html, /Connected to SRI Pool \(fallback\)/);
+  assert.match(html, /SV1 reconnecting/);
 });
