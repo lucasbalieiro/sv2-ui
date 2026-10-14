@@ -701,14 +701,14 @@ export function UnifiedDashboard() {
         <Alert variant="warning">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-col gap-1">
-              <AlertTitle>Pool Mining (fallback)</AlertTitle>
+              <AlertTitle>Switched to a fallback pool</AlertTitle>
               <span>
-                Your primary pool isn't working, so mining switched to {fallbackPoolLabel}. It
-                won't switch back on its own.
+                Your primary pool connection failed. Mining continues on {fallbackPoolLabel}.
+                Retry to reconnect to your primary pool.
               </span>
             </div>
             <RestartMiningButton onClick={handleStartMining} isRestarting={isStarting}>
-              Try my primary pool again
+              Retry
             </RestartMiningButton>
           </div>
         </Alert>
