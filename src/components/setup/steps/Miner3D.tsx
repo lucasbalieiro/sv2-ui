@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-export type MinerPhase = 'idle' | 'arming';
+export type MinerPhase = 'idle' | 'arming' | 'launch';
 interface Miner3DProps { phase: MinerPhase; }
 
 // ─── Geometry ─────────────────────────────────────────────────────────────────
@@ -31,6 +31,8 @@ const PSU_D = 52;
 const Z_PSU = -(D / 2 - PSU_D / 2);   // −28 px
 
 const DEF_ROT = { x: -8, y: 90 };
+const TILT_DEG       = 3;    // how far the miner leans toward a hovering cursor
+const SPIN_HALF_LIFE = 300;  // ms — friction on a flicked spin
 
 // ─── Fan physics constants ─────────────────────────────────────────────────────
 const IDLE_VEL     = 360 / 3000;  // 0.12 deg/ms → 3.0 s/rev at idle
@@ -113,11 +115,17 @@ function VentGrid({ w, h, sp }: { w: number; h: number; sp: React.SVGProps<SVGSV
 // ─── Miner3D ──────────────────────────────────────────────────────────────────
 
 export function Miner3D({ phase }: Miner3DProps) {
-  const [rot, setRot]       = useState(DEF_ROT);
   const [dragging, setDrag] = useState(false);
   const [powered, setPowered] = useState(true);
 
-  const drag = useRef<{ px: number; py: number; rx: number; ry: number } | null>(null);
+  // Scene rotation lives in refs and is written by the RAF loop, like the fans
+  const sceneRef  = useRef<HTMLDivElement>(null);
+  const rotRef    = useRef({ ...DEF_ROT });
+  const rotVelRef = useRef(0);
+  const tiltRef   = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
+  const resetRef  = useRef(false);
+  const reducedRef = useRef(false);
+  const drag = useRef<{ px: number; py: number; rx: number; ry: number; t: number; v: number } | null>(null);
 
   // ── Fan physics (all refs — zero React re-renders during spin) ───────────────
   const angleRef    = useRef(0);
@@ -133,7 +141,10 @@ export function Miner3D({ phase }: Miner3DProps) {
   const hubRefR  = useRef<SVGCircleElement>(null);
 
   const isOff    = !powered;
-  const isActive = powered && phase === 'arming';
+  const isActive = powered && phase !== 'idle';
+
+  // Starting always powers the miner back on, otherwise it sits dark through the launch
+  useEffect(() => { if (phase !== 'idle') setPowered(true); }, [phase]);
 
   // Border flash: briefly spike opacity on activation for electrical surge feel
   const [borderFlash, setBorderFlash] = useState(false);
@@ -158,6 +169,7 @@ export function Miner3D({ phase }: Miner3DProps) {
 
   // RAF loop — started once, reads only refs (never stale, zero re-renders)
   useEffect(() => {
+    reducedRef.current = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const frame = (now: number) => {
       const dt = lastTimeRef.current !== null
         ? Math.min(now - lastTimeRef.current, 100)  // cap: handles tab wake-up
@@ -180,6 +192,24 @@ export function Miner3D({ phase }: Miner3DProps) {
       if (spinRefL.current) { spinRefL.current.style.transform = t; spinRefL.current.style.filter = f; }
       if (spinRefR.current) { spinRefR.current.style.transform = t; spinRefR.current.style.filter = f; }
 
+      // Scene: double-click reset, flick inertia, cursor tilt
+      const rot = rotRef.current, tilt = tiltRef.current;
+      const ease = (halfLife: number) => 1 - Math.pow(0.5, dt / halfLife);
+      if (resetRef.current) {
+        rot.x += (DEF_ROT.x - rot.x) * ease(120);
+        rot.y += (DEF_ROT.y - rot.y) * ease(120);
+        if (Math.abs(DEF_ROT.x - rot.x) < 0.05 && Math.abs(DEF_ROT.y - rot.y) < 0.05) resetRef.current = false;
+      } else if (!drag.current) {
+        rot.y += rotVelRef.current * dt;
+        rotVelRef.current *= Math.pow(0.5, dt / SPIN_HALF_LIFE);
+      }
+      tilt.x += (tilt.tx - tilt.x) * ease(150);
+      tilt.y += (tilt.ty - tilt.y) * ease(150);
+      if (sceneRef.current) {
+        sceneRef.current.style.transform =
+          `rotateX(${(rot.x + tilt.x).toFixed(2)}deg) rotateY(${(rot.y + tilt.y).toFixed(2)}deg)`;
+      }
+
       rafRef.current = requestAnimationFrame(frame);
     };
     rafRef.current = requestAnimationFrame(frame);
@@ -189,17 +219,48 @@ export function Miner3D({ phase }: Miner3DProps) {
   // ── Drag-to-rotate ──────────────────────────────────────────────────────────
   const onPD = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { px: e.clientX, py: e.clientY, rx: rot.x, ry: rot.y };
+    const rot = rotRef.current, tilt = tiltRef.current;
+    // Fold the tilt into the drag start so the miner doesn't jump under the pointer
+    rot.x += tilt.x;
+    rot.y += tilt.y;
+    tilt.x = tilt.y = tilt.tx = tilt.ty = 0;
+    rotVelRef.current = 0;
+    resetRef.current = false;
+    drag.current = { px: e.clientX, py: e.clientY, rx: rot.x, ry: rot.y, t: e.timeStamp, v: 0 };
     setDrag(true);
   };
-  const onPM = (e: React.PointerEvent) => {
-    if (!drag.current) return;
-    setRot({
-      x: Math.max(-60, Math.min(10, drag.current.rx - (e.clientY - drag.current.py) * 0.35)),
-      y: drag.current.ry + (e.clientX - drag.current.px) * 0.4,
-    });
+  const onPM = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    if (!d) {
+      // A hovering mouse tilts the miner slightly so it reads as 3D; it rests front-on otherwise
+      if (e.pointerType !== 'mouse' || reducedRef.current) return;
+      const r = e.currentTarget.getBoundingClientRect();
+      tiltRef.current.tx = ((e.clientY - r.top) / r.height - 0.5) * 2 * TILT_DEG;
+      tiltRef.current.ty = ((e.clientX - r.left) / r.width - 0.5) * 2 * TILT_DEG;
+      return;
+    }
+    const rot = rotRef.current;
+    const y = d.ry + (e.clientX - d.px) * 0.4;
+    if (e.timeStamp > d.t) d.v = (d.v + (y - rot.y) / (e.timeStamp - d.t)) / 2;
+    d.t = e.timeStamp;
+    rot.x = Math.max(-60, Math.min(10, d.rx - (e.clientY - d.py) * 0.35));
+    rot.y = y;
   };
-  const onPU = () => { drag.current = null; setDrag(false); };
+  const onPU = (e: React.PointerEvent) => {
+    const d = drag.current;
+    // A flick keeps spinning; a drag that came to rest before release doesn't
+    if (d && e.timeStamp - d.t < 80) rotVelRef.current = Math.max(-1.5, Math.min(1.5, d.v));
+    drag.current = null;
+    setDrag(false);
+  };
+  const onLeave = () => { tiltRef.current.tx = tiltRef.current.ty = 0; };
+  const onReset = () => {
+    const rot = rotRef.current;
+    // Take the short way back after the miner has been spun several turns
+    rot.y = DEF_ROT.y + ((((rot.y - DEF_ROT.y) % 360) + 540) % 360) - 180;
+    rotVelRef.current = 0;
+    resetRef.current = true;
+  };
 
   // ── Hub click — pure ref mutation, no setState ───────────────────────────────
   const handleFanClick = (e: React.PointerEvent) => {
@@ -297,7 +358,8 @@ export function Miner3D({ phase }: Miner3DProps) {
       onPointerMove={onPM}
       onPointerUp={onPU}
       onPointerCancel={onPU}
-      onDoubleClick={() => setRot(DEF_ROT)}
+      onPointerLeave={onLeave}
+      onDoubleClick={onReset}
     >
       {/* Glow bloom — sibling to 3D scene so filter never flattens preserve-3d */}
       <div
@@ -314,16 +376,21 @@ export function Miner3D({ phase }: Miner3DProps) {
         }}
       />
 
-      {/* Vibration wrapper — 5 quick shakes (~450 ms) then stops naturally */}
-      <div style={{ animation: isActive ? 'miner-vibrate 0.09s linear 5' : 'none' }}>
-      <div style={{ perspective: '1100px' }}>
-        <div style={{
+      {/* Vibration wrapper — quick shakes through the spool-up (~1.1 s), then stops naturally */}
+      <div style={{ animation: isActive ? 'miner-vibrate 0.09s linear 12' : 'none' }}>
+      {/* On launch the camera pushes into the miner while it fades */}
+      <div style={{
+        perspective: '1100px',
+        transform:   phase === 'launch' ? 'scale(4)' : undefined,
+        opacity:     phase === 'launch' ? 0 : 1,
+        transition:  'transform 0.7s cubic-bezier(0.32, 0, 0.67, 0), opacity 0.7s ease-in',
+      }}>
+        <div ref={sceneRef} style={{
           width:          W,
           height:         H,
           position:       'relative',
           transformStyle: 'preserve-3d',
-          transform:      `rotateX(${rot.x}deg) rotateY(${rot.y}deg)`,
-          transition:     dragging ? 'none' : 'transform 0.65s cubic-bezier(0.16, 1, 0.3, 1)',
+          transform:      `rotateX(${DEF_ROT.x}deg) rotateY(${DEF_ROT.y}deg)`,
         } as CSSProperties}>
 
           {/* ════════════════════ CHASSIS FACES ════════════════════════════ */}

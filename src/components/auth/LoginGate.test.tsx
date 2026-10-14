@@ -23,9 +23,9 @@ function render(state: AuthState): string {
 
 const cases: Array<[string, AuthState, string]> = [
   ['fresh install opens on the welcome screen',
-    { passwordSet: false, authenticated: false, recoveryKeySet: false, needsSetup: true }, 'Start mining'],
+    { passwordSet: false, authenticated: false, recoveryKeySet: false, needsSetup: true }, '>Start</button>'],
   ['configured install without a password goes straight to creating one',
-    { passwordSet: false, authenticated: false, recoveryKeySet: false, needsSetup: false }, 'Create an admin password'],
+    { passwordSet: false, authenticated: false, recoveryKeySet: false, needsSetup: false }, 'Protect your mining setup'],
   ['an existing password always requires login',
     { passwordSet: true, authenticated: false, recoveryKeySet: false, needsSetup: true }, 'Unlock sv2-ui'],
   ['a valid session renders the app',

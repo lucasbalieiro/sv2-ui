@@ -63,15 +63,16 @@ function RecoveryKeyPanel({
   return (
     <AuthCard
       title="Save your recovery key"
-      description="This key resets your password if you ever forget it. Your mining configuration is kept."
+      description="This key resets your password if you ever forget it."
       showSupport={false}
     >
       <div className="space-y-4">
         <CopyableValue value={recoveryKey} />
 
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground text-center">
           Store it somewhere safe. If you lose both your password and this key,
-          recovering the device means erasing its config volume.
+          you can reset your password by deleting credential.json from the
+          app&apos;s config folder. Your mining settings are kept.
         </p>
 
         <Button type="button" size="lg" className="w-full rounded-full" onClick={onDone}>
@@ -114,8 +115,8 @@ function CreatePasswordForm({
 
   return (
     <AuthCard
-      title="Create an admin password"
-      description="This password protects your mining setup. Your configuration is preserved across updates and restarts."
+      title="Protect your mining setup"
+      description="Create an admin password to prevent others from changing your mining settings."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
@@ -146,8 +147,8 @@ function CreatePasswordForm({
           {createPassword.isPending ? 'Creating...' : 'Create password'}
         </Button>
 
-        <p className="text-xs text-muted-foreground">
-          Store it somewhere safe. Recovering your account requires the recovery key shown on the next screen. If you lose it, you can still recover access by deleting the credential file and creating a new password — your mining configuration will be kept.
+        <p className="text-xs text-muted-foreground text-center">
+          You&apos;ll get a recovery key on the next screen. Keep it safe so you can reset your password if you forget it.
         </p>
       </form>
     </AuthCard>
