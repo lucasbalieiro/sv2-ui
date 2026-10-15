@@ -103,7 +103,7 @@ export function Shell({
       ? 'The Translator keeps stopping. SV2 firmware keeps mining; SV1 firmware cannot connect. Check the logs in Settings.'
       : 'The Translator is restarting. SV2 firmware keeps mining; SV1 firmware reconnects automatically.'
     : onFallbackPool
-      ? "Your primary pool isn't working, so mining switched to a fallback pool. It won't switch back on its own."
+      ? 'The connection to your primary pool failed, so mining switched to a fallback pool.'
       : undefined;
   const statusTitle = [statusHint, customPoolEndpoint].filter(Boolean).join('\n') || undefined;
 
