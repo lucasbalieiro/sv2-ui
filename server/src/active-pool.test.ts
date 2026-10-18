@@ -408,6 +408,8 @@ test('reset is not undone by an in-flight incremental read', async () => {
   // With no state left behind, the next poll reads the full history again and
   // reports no pool: the reset stands.
   assert.equal(await tracker.getActivePool('translator', POOLS), null);
+  // The length pins the read itself: an absent call also reads as undefined.
+  assert.equal(calls.length, 3);
   assert.equal(calls[2], undefined);
 });
 
@@ -457,6 +459,8 @@ test('reset is not undone by a failing in-flight incremental read', async () => 
 
   // The next poll reads the full history again and reports no pool.
   assert.deepEqual(await tracker.getActivePool('translator', POOLS), null);
+  // The length pins the read itself: an absent call also reads as undefined.
+  assert.equal(calls.length, 3);
   assert.equal(calls[2], undefined);
 });
 
