@@ -84,7 +84,7 @@ test('jdcBitcoinCoreDisconnectedParser matches CapnpError Disconnected', () => {
   const lines = [
     createLogLine(
       'jdc',
-      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Disconnected, extra: "Peer disconnected." })'
+      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V31X, protocol: TDP, details: "CapnpError(Error { kind: Disconnected, extra: \\"Peer disconnected.\\" })" }'
     ),
   ];
 
@@ -117,7 +117,7 @@ test('jdcBitcoinCoreDisconnectedParser matches CannotConnectToUnixSocket', () =>
   const lines = [
     createLogLine(
       'jdc',
-      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CannotConnectToUnixSocket("/root/.bitcoin/node.sock", "Connection refused (os error 111)")'
+      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V31X, protocol: TDP, details: "CannotConnectToUnixSocket(\\"/root/.bitcoin/node.sock\\", \\"No such file or directory (os error 2)\\")" }'
     ),
   ];
 
@@ -155,7 +155,7 @@ test('jdcBitcoinCoreDisconnectedParser collects multiple matches', () => {
   const lines = [
     createLogLine(
       'jdc',
-      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Disconnected, extra: "Peer disconnected." })'
+      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V31X, protocol: TDP, details: "CapnpError(Error { kind: Disconnected, extra: \\"Peer disconnected.\\" })" }'
     ),
     createLogLine(
       'jdc',
@@ -275,7 +275,7 @@ test('jdcBitcoinCoreUnsupportedMiningInterfaceParser matches old mining interfac
   const lines = [
     createLogLine(
       'jdc',
-      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Failed, extra: "remote exception: std::exception: Old mining interface (@2) not supported. Please update your client!" })'
+      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V30X, protocol: TDP, details: "CapnpError(Error { kind: Failed, extra: \\"remote exception: std::exception: Old mining interface (@2) not supported. Please update your client!\\" })" }'
     ),
   ];
 
@@ -309,7 +309,7 @@ test('jdcBitcoinCoreUnsupportedMiningInterfaceParser matches unimplemented Bitco
   const lines = [
     createLogLine(
       'jdc',
-      'ERROR jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Unimplemented, extra: "remote exception: Method not implemented.; interfaceName = capnp/init.capnp:Init; typeId = 9815814193794562661; methodId = 3" })'
+      'ERROR jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V31X, protocol: TDP, details: "CapnpError(Error { kind: Unimplemented, extra: \\"remote exception: Method not implemented.; interfaceName = capnp/init.capnp:Init; typeId = 9815814193794562661; methodId = 3\\" })" }'
     ),
   ];
 
@@ -338,7 +338,7 @@ test('collectDiagnostics includes Bitcoin Core version mismatch diagnostics', ()
   const lines = [
     createLogLine(
       'jdc',
-      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: CapnpError(Error { kind: Failed, extra: "remote exception: std::exception: Old mining interface (@2) not supported. Please update your client!" })'
+      'jd_client_sv2::template_receiver::bitcoin_core: Failed to create BitcoinCoreToSv2: Initialization { version: V30X, protocol: TDP, details: "CapnpError(Error { kind: Failed, extra: \\"remote exception: std::exception: Old mining interface (@2) not supported. Please update your client!\\" })" }'
     ),
   ];
 

@@ -10,7 +10,7 @@ const UNKNOWN_USER_REGEX =
   /OpenMiningChannelError\(request_id: \d+, error_code: unknown-user\)/;
 
 const JDC_BITCOIN_CORE_DISCONNECTED_REGEX =
-  /Failed to (create BitcoinCoreToSv2|get response): (CannotConnectToUnixSocket|CapnpError\(Error \{ kind: Disconnected|Disconnected: Peer disconnected)/;
+  /Failed to (create BitcoinCoreToSv2|get response):.*(CannotConnectToUnixSocket|CapnpError\(Error \{ kind: Disconnected|Disconnected: Peer disconnected)/;
 
 const JDC_BITCOIN_CORE_IBD_HINT_REGEX =
   /Is the Bitcoin node undergoing IBD\?/;
@@ -22,7 +22,7 @@ const JDC_BITCOIN_CORE_IBD_RECOVERY_REGEX =
   /Required template data received, ready to accept connections/;
 
 const JDC_BITCOIN_CORE_UNSUPPORTED_MINING_INTERFACE_REGEX =
-  /(Old mining interface \(@[^)]+\) not supported\. Please update your client!|Failed to create BitcoinCoreToSv2: CapnpError\(Error \{ kind: Unimplemented, extra: "remote exception: Method not implemented\.; interfaceName = capnp\/init\.capnp:Init; typeId = \d+; methodId = \d+" \}\))/;
+  /(Old mining interface \(@[^)]+\) not supported\. Please update your client!|Failed to create BitcoinCoreToSv2:.*CapnpError\(Error \{ kind: Unimplemented,.*interfaceName = capnp\/init\.capnp:Init)/;
 
 const INVALID_CERTIFICATE_REGEX =
   /(InvalidCertificate|Invalid Certificate).*SignatureNoiseMessage \{ version: \d+, valid_from: (\d+), not_valid_after: (\d+),/;
