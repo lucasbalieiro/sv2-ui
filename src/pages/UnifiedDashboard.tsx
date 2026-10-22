@@ -738,13 +738,17 @@ export function UnifiedDashboard() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-col gap-1">
               <AlertTitle>Pool connection details changed</AlertTitle>
-              {movedPresetPools.map(({ pool, preset }, index) => (
-                <span key={index}>
-                  {hasSameEndpoint(pool, preset)
-                    ? `${preset.name} has a new authority key.`
-                    : `${preset.name} moved from ${pool.address}:${pool.port} to ${preset.address}:${preset.port}.`}
-                </span>
-              ))}
+              {movedPresetPools.map(({ pool, preset }, index) => {
+                const newKey = pool.authority_public_key !== preset.authority_public_key;
+                return (
+                  <span key={index}>
+                    {hasSameEndpoint(pool, preset)
+                      ? `${preset.name} has a new authority key`
+                      : `${preset.name} moved from ${pool.address}:${pool.port} to ${preset.address}:${preset.port}${newKey ? ' with a new authority key' : ''}`}
+                    {newKey ? <>: <span className="font-mono break-all">{preset.authority_public_key}</span></> : '.'}
+                  </span>
+                );
+              })}
               <span>{configuredButStopped ? 'Updating starts mining.' : 'Updating restarts mining.'}</span>
               {updateConfigError && <span className="text-red-500">{updateConfigError.message}</span>}
             </div>

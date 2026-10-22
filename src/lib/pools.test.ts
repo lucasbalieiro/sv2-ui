@@ -94,6 +94,7 @@ const SHIPPED_PRESET_ENDPOINTS = [
   { id: 'braiins', address: 'stratum.braiins.com', port: 3333, authority_public_key: '9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna' },
   { id: 'sri-solo', address: '75.119.150.111', port: 3333, authority_public_key: '9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72' },
   { id: 'blitzpool', address: 'blitzpool.yourdevice.ch', port: 3333, authority_public_key: '9bCoFxTszKCuffyywH5uS5o6WcU4vsjTH2axxc7wE86y2HhvULU' },
+  { id: 'ckpool', address: 'sv2solo.ckpool.org', port: 3336, authority_public_key: '9anrRNhBh7869XtNnFcCuGBRZP51E635qGbu457J5kHdszhfRc3' },
   { id: 'ckpool', address: 'stratum.ckpool.org', port: 3336, authority_public_key: '9anrRNhBh7869XtNnFcCuGBRZP51E635qGbu457J5kHdszhfRc3' },
   { id: 'nexuspool', address: 'nexuspool.io', port: 3350, authority_public_key: '9amd6GUzTaGXASESCa75c9Rx3vWYihRyLUAE3Vrmqwgm3T9jtxN' },
   { id: 'publicpool', address: 'public-pool.io', port: 3333, authority_public_key: '9c4zpyJ2ndm4e8sP2uNc1VNCGxYjqaxWS6wUCjk8zFj6njFquH6' },
