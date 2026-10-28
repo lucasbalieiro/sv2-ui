@@ -49,6 +49,12 @@ export function HashrateStep({ data, updateData, onNext }: StepProps) {
     createAdvancedMiningConfigValues(data.translator)
   ));
 
+  // On a first run the suggested subnet waits on a Docker image pull, so it can
+  // reach data after this step opens. It only fills a field that is still empty.
+  useEffect(() => {
+    if (data.miner_telemetry_cidr) setMinerTelemetryCidr((current) => current || data.miner_telemetry_cidr);
+  }, [data.miner_telemetry_cidr]);
+
   const handlePresetChange = (presetId: string) => {
     setSelectedPreset(presetId);
     if (presetId !== 'custom') {

@@ -13,7 +13,7 @@ import { HashrateStep } from './steps/HashrateStep';
 import { MiningIdentityStep } from './steps/MiningIdentityStep';
 import { BitcoinPrereqStep } from './steps/BitcoinPrereqStep';
 import { ReviewStart } from './steps/ReviewStart';
-import { getCurrentConfig } from '@/hooks/useControlApi';
+import { getCurrentConfig, getSuggestedMinerTelemetryCidr } from '@/hooks/useControlApi';
 import { useBitcoinRpcDiscovery } from '@/hooks/useBitcoinRpcDiscovery';
 
 function computeSteps(data: SetupData): SetupStep[] {
@@ -93,6 +93,15 @@ export function SetupWizard() {
         if (targetStep && computeSteps(config).includes(targetStep)) {
           setCurrentStep(targetStep);
         }
+      } else {
+        // Only a fresh setup is prefilled, so editing a saved setup never
+        // starts LAN scanning the operator did not choose.
+        void getSuggestedMinerTelemetryCidr().then((cidr) => {
+          if (!cidr || dataRef.current.miner_telemetry_cidr) return;
+          const nextData = { ...dataRef.current, miner_telemetry_cidr: cidr };
+          dataRef.current = nextData;
+          setData(nextData);
+        });
       }
       setLoadingConfig(false);
     });

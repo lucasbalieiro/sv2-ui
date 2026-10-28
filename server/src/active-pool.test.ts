@@ -363,6 +363,107 @@ test('reset drops the in-flight read so the next poll starts its own', async () 
   });
 });
 
+test('reset is not undone by an in-flight incremental read', async () => {
+  const calls: Array<{ since?: number } | undefined> = [];
+  let readCount = 0;
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const tracker = new ActivePoolTracker(async (_container, options) => {
+    calls.push(options);
+    readCount += 1;
+    if (readCount === 1) {
+      return [
+        log('Trying upstream 1 of 2: primary.example.com:3333'),
+        log('Connected to upstream at 192.0.2.10:3333'),
+        log('Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)'),
+      ];
+    }
+    if (readCount === 2) {
+      await readGate;
+    }
+    return [];
+  });
+
+  // Commit a state first, so the poll that overlaps the restart reads
+  // incrementally and captures the previous run's snapshot.
+  assert.deepEqual(await tracker.getActivePool('translator', POOLS), {
+    name: 'Primary',
+    index: 0,
+  });
+
+  const stalePoll = tracker.getActivePool('translator', POOLS);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(typeof calls[1]?.since, 'number');
+
+  // The stack restarts with the same configuration while the read is pending.
+  tracker.reset();
+  releaseRead();
+
+  // The pre-reset read saw the previous run's containers, so it must publish
+  // neither a pool nor a state derived from its snapshot.
+  assert.deepEqual(await stalePoll, null);
+
+  // With no state left behind, the next poll reads the full history again and
+  // reports no pool: the reset stands.
+  assert.equal(await tracker.getActivePool('translator', POOLS), null);
+  // The length pins the read itself: an absent call also reads as undefined.
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2], undefined);
+});
+
+test('reset is not undone by a failing in-flight incremental read', async () => {
+  const calls: Array<{ since?: number } | undefined> = [];
+  let readCount = 0;
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const tracker = new ActivePoolTracker(async (_container, options) => {
+    calls.push(options);
+    readCount += 1;
+    if (readCount === 1) {
+      return [
+        log('Trying upstream 1 of 2: primary.example.com:3333'),
+        log('Connected to upstream at 192.0.2.10:3333'),
+        log('Received: SetupConnectionSuccess(used_version: 2, flags: 0x00000000)'),
+      ];
+    }
+    if (readCount === 2) {
+      await readGate;
+      // The old container disappears while the stack restarts.
+      throw new Error('container is restarting');
+    }
+    return [];
+  });
+
+  // Commit a state first, so the poll that overlaps the restart reads
+  // incrementally and captures the previous run's snapshot.
+  assert.deepEqual(await tracker.getActivePool('translator', POOLS), {
+    name: 'Primary',
+    index: 0,
+  });
+
+  const stalePoll = tracker.getActivePool('translator', POOLS);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(typeof calls[1]?.since, 'number');
+
+  // The stack restarts with the same configuration while the read is pending.
+  tracker.reset();
+  releaseRead();
+
+  // The previous-run fallback is for failures within the current run; a
+  // failure after the reset must report no pool instead of the snapshot.
+  assert.deepEqual(await stalePoll, null);
+
+  // The next poll reads the full history again and reports no pool.
+  assert.deepEqual(await tracker.getActivePool('translator', POOLS), null);
+  // The length pins the read itself: an absent call also reads as undefined.
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2], undefined);
+});
+
 test('coalesces concurrent incremental polls into one incremental read', async () => {
   const calls: Array<{ since?: number } | undefined> = [];
   let readCount = 0;
