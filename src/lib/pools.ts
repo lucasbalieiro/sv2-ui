@@ -79,12 +79,15 @@ export const SOLO_POOLS: KnownPool[] = [
   {
     id: 'nexuspool',
     name: 'NexusPool',
-    address: 'nexuspool.io',
+    address: 'solo.nexuspool.io',
     port: 3350,
     authority_public_key: '9amd6GUzTaGXASESCa75c9Rx3vWYihRyLUAE3Vrmqwgm3T9jtxN',
     description: 'NexusPool',
     logoUrl: '/nexuspool-logo.png',
     logoScale: 1.4,
+    previousEndpoints: [
+      { address: 'nexuspool.io', port: 3350, authority_public_key: '9amd6GUzTaGXASESCa75c9Rx3vWYihRyLUAE3Vrmqwgm3T9jtxN' },
+    ],
   },
   {
     id: 'publicpool',
