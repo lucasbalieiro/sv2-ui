@@ -97,6 +97,7 @@ const SHIPPED_PRESET_ENDPOINTS = [
   { id: 'ckpool', address: 'sv2solo.ckpool.org', port: 3336, authority_public_key: '9anrRNhBh7869XtNnFcCuGBRZP51E635qGbu457J5kHdszhfRc3' },
   { id: 'ckpool', address: 'stratum.ckpool.org', port: 3336, authority_public_key: '9anrRNhBh7869XtNnFcCuGBRZP51E635qGbu457J5kHdszhfRc3' },
   { id: 'nexuspool', address: 'nexuspool.io', port: 3350, authority_public_key: '9amd6GUzTaGXASESCa75c9Rx3vWYihRyLUAE3Vrmqwgm3T9jtxN' },
+  { id: 'nexuspool', address: 'solo.nexuspool.io', port: 3350, authority_public_key: '9amd6GUzTaGXASESCa75c9Rx3vWYihRyLUAE3Vrmqwgm3T9jtxN' },
   { id: 'publicpool', address: 'public-pool.io', port: 3333, authority_public_key: '9c4zpyJ2ndm4e8sP2uNc1VNCGxYjqaxWS6wUCjk8zFj6njFquH6' },
   { id: 'publicpool', address: 'public-pool.io', port: 23330, authority_public_key: '9c4zpyJ2ndm4e8sP2uNc1VNCGxYjqaxWS6wUCjk8zFj6njFquH6' },
   { id: 'pyblock', address: 'pool.pyblock.xyz', port: 5555, authority_public_key: '9anZZb1uaJDqubvJhekPiNRHA2tuShcNaugDmFxtnTq54sDvTf5' },
